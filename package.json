@@ -1,6 +1,6 @@
 {
   "name": "finch-file-browser",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Browse, preview and edit the files in the current Finch conversation's folder, right inside the session panel.",
   "author": {
     "name": "zhaobaizhou",
@@ -101,8 +101,14 @@
           "type": "select",
           "label": "Sort files by",
           "options": [
-            { "value": "name", "label": "Name (folders first)" },
-            { "value": "recent", "label": "Recently modified first" }
+            {
+              "value": "name",
+              "label": "Name (folders first)"
+            },
+            {
+              "value": "recent",
+              "label": "Recently modified first"
+            }
           ],
           "default": "name"
         },
@@ -130,8 +136,14 @@
           "type": "select",
           "label": "Open Markdown in",
           "options": [
-            { "value": "preview", "label": "Rendered preview" },
-            { "value": "source", "label": "Source editor" }
+            {
+              "value": "preview",
+              "label": "Rendered preview"
+            },
+            {
+              "value": "source",
+              "label": "Source editor"
+            }
           ],
           "default": "preview"
         },
@@ -159,8 +171,14 @@
           "type": "select",
           "label": "When the open file changes on disk",
           "options": [
-            { "value": "auto", "label": "Reload automatically" },
-            { "value": "ask", "label": "Always ask first" }
+            {
+              "value": "auto",
+              "label": "Reload automatically"
+            },
+            {
+              "value": "ask",
+              "label": "Always ask first"
+            }
           ],
           "default": "auto"
         },
