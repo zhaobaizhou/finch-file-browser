@@ -27,8 +27,8 @@
       "sortOrder": {
         "label": "文件排序方式",
         "options": {
-          "name": "按名称（目录优先）",
-          "recent": "最近修改在前"
+          "name": { "label": "按名称（目录优先）" },
+          "recent": { "label": "最近修改在前" }
         }
       },
       "showModTime": {
@@ -44,8 +44,8 @@
       "markdownView": {
         "label": "Markdown 打开方式",
         "options": {
-          "preview": "渲染后的预览",
-          "source": "源码编辑器"
+          "preview": { "label": "渲染后的预览" },
+          "source": { "label": "源码编辑器" }
         }
       },
       "codeFontSize": {
@@ -61,8 +61,8 @@
       "externalChange": {
         "label": "当前文件在磁盘上被修改时",
         "options": {
-          "auto": "自动重新载入",
-          "ask": "总是先问我"
+          "auto": { "label": "自动重新载入" },
+          "ask": { "label": "总是先问我" }
         }
       },
       "autoSave": {
