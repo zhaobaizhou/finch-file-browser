@@ -35,21 +35,67 @@ function createDemoBridge() {
     '': [
       { name: 'docs', rel: 'docs', dir: true, size: 0, mtimeMs: 0, ignored: false },
       { name: 'reference', rel: 'reference', dir: true, size: 0, mtimeMs: 0, ignored: false },
+      { name: 'node_modules', rel: 'node_modules', dir: true, size: 0, mtimeMs: 0, ignored: true },
       { name: '.git', rel: '.git', dir: true, size: 0, mtimeMs: 0, ignored: true },
       { name: 'README.md', rel: 'README.md', dir: false, size: 1120, mtimeMs: Date.now(), ignored: false, changed: true },
-      { name: 'package.json', rel: 'package.json', dir: false, size: 890, mtimeMs: 0, ignored: false },
-      { name: 'capacitor.config.json', rel: 'capacitor.config.json', dir: false, size: 320, mtimeMs: 0, ignored: false },
+      { name: '.gitignore', rel: '.gitignore', dir: false, size: 180, mtimeMs: Date.now(), ignored: false },
+      { name: 'package.json', rel: 'package.json', dir: false, size: 890, mtimeMs: Date.now() - 86400_000 * 3, ignored: false },
+      { name: 'capacitor.config.json', rel: 'capacitor.config.json', dir: false, size: 320, mtimeMs: Date.now() - 86400_000 * 40, ignored: false },
     ],
     docs: [
       { name: 'APK-EVIDENCE.md', rel: 'docs/APK-EVIDENCE.md', dir: false, size: 3120, mtimeMs: Date.now(), ignored: false, changed: true, hits: 4 },
-      { name: 'BACKUP-RESTORE.md', rel: 'docs/BACKUP-RESTORE.md', dir: false, size: 2048, mtimeMs: 0, ignored: false },
-      { name: 'PRODUCT-ROADMAP.md', rel: 'docs/PRODUCT-ROADMAP.md', dir: false, size: 4096, mtimeMs: 0, ignored: false, hits: 2 },
-      { name: 'REFERENCE.md', rel: 'docs/REFERENCE.md', dir: false, size: 1536, mtimeMs: 0, ignored: false },
+      { name: 'BACKUP-RESTORE.md', rel: 'docs/BACKUP-RESTORE.md', dir: false, size: 2048, mtimeMs: Date.now() - 3600_000, ignored: false },
+      { name: 'PRODUCT-ROADMAP.md', rel: 'docs/PRODUCT-ROADMAP.md', dir: false, size: 4096, mtimeMs: Date.now() - 86400_000, ignored: false, hits: 2 },
+      { name: 'REFERENCE.md', rel: 'docs/REFERENCE.md', dir: false, size: 1536, mtimeMs: Date.now() - 86400_000 * 12, ignored: false },
     ],
     reference: [
-      { name: 'apk-identity.json', rel: 'reference/apk-identity.json', dir: false, size: 640, mtimeMs: 0, ignored: false },
+      { name: 'apk-identity.json', rel: 'reference/apk-identity.json', dir: false, size: 640, mtimeMs: Date.now() - 86400_000 * 2, ignored: false },
     ],
   };
+  const demoState = {
+    showHidden: false,
+    textOnly: false,
+    hideIgnoredFolders: false,
+    showModTime: false,
+    sortOrder: 'name',
+    markdownView: 'preview',
+    codeFontSize: 0,
+    wrapLongLines: false,
+    showLineNumbers: false,
+    externalChange: 'auto',
+  };
+  const overrides = [];
+  const visibleEntries = (rel) => {
+    const entries = (tree[rel] ?? []).filter((entry) => {
+      if (!demoState.showHidden && entry.name.startsWith('.')) return false;
+      if (entry.dir && entry.ignored && demoState.hideIgnoredFolders) return false;
+      return true;
+    });
+    if (demoState.sortOrder === 'recent') {
+      return entries.slice().sort((a, b) => {
+        if (a.dir !== b.dir) return a.dir ? -1 : 1;
+        if (a.dir) return a.name.localeCompare(b.name);
+        return b.mtimeMs - a.mtimeMs;
+      });
+    }
+    return entries;
+  };
+  const settingsPayload = (reset) => ({
+    type: 'settings',
+    settings: demoState,
+    overridableKeys: ['showHidden', 'textOnly', 'hideIgnoredFolders', 'sortOrder', 'showModTime'],
+    overrides,
+    ...(reset ? { reset: true } : {}),
+  });
+  // Standalone-review helper: only ever defined when the page runs outside
+  // Finch, so a developer can push settings without a host.
+  window.__fbDemo = {
+    pushSettings(patch) {
+      Object.assign(demoState, patch);
+      listeners.forEach((listener) => listener(settingsPayload()));
+    },
+  };
+
   const reply = (message) => {
     const emit = (payload) => listeners.forEach((listener) => listener(payload));
     if (message.type === 'ready') {
@@ -59,10 +105,29 @@ function createDemoBridge() {
         rootLabel: 'ArrowsPuzzle',
         locale: 'zh-CN',
         sessionStartedAtMs: Date.now() - 3600_000,
+        settings: demoState,
+        overridableKeys: ['showHidden', 'textOnly', 'hideIgnoredFolders', 'sortOrder', 'showModTime'],
+        overrides,
       });
-      emit({ type: 'dir', rel: '', entries: tree[''], changed: ['README.md', 'docs/APK-EVIDENCE.md'], touched: [['docs/APK-EVIDENCE.md', 4]] });
+      emit({ type: 'dir', rel: '', entries: visibleEntries(''), changed: ['README.md', 'docs/APK-EVIDENCE.md'], touched: [['docs/APK-EVIDENCE.md', 4]] });
     } else if (message.type === 'listDir') {
-      emit({ type: 'dir', rel: message.rel, entries: tree[message.rel] ?? [] });
+      emit({ type: 'dir', rel: message.rel, entries: visibleEntries(message.rel) });
+    } else if (message.type === 'setSetting') {
+      demoState[message.key] = message.value;
+      if (!overrides.includes(message.key)) overrides.push(message.key);
+      emit(settingsPayload());
+      emit({ type: 'dir', rel: '', entries: visibleEntries('') });
+    } else if (message.type === 'resetSettings') {
+      Object.assign(demoState, {
+        showHidden: false,
+        textOnly: false,
+        hideIgnoredFolders: false,
+        showModTime: false,
+        sortOrder: 'name',
+      });
+      overrides.length = 0;
+      emit(settingsPayload(true));
+      emit({ type: 'dir', rel: '', entries: visibleEntries('') });
     } else if (message.type === 'open') {
       const name = message.rel.split('/').pop();
       emit({
@@ -135,7 +200,29 @@ const S = {
   searchResults: null,
   searchQuery: '',
   diskConflict: null,
+  settings: {
+    showHidden: false,
+    textOnly: false,
+    hideIgnoredFolders: false,
+    sortOrder: 'name',
+    showModTime: false,
+    markdownView: 'preview',
+    codeFontSize: 0,
+    wrapLongLines: false,
+    showLineNumbers: false,
+    externalChange: 'auto',
+  },
+  overridable: [],
+  overrides: [],
 };
+
+const QUICK_SETTINGS = [
+  { key: 'showHidden', label: '显示以「.」开头的文件' },
+  { key: 'textOnly', label: '只显示文本类文件' },
+  { key: 'showModTime', label: '显示修改时间' },
+  { key: 'hideIgnoredFolders', label: '隐藏被忽略的目录' },
+  { key: 'sortOrder', label: '最近修改在前', cycle: ['name', 'recent'] },
+];
 
 const el = (id) => document.getElementById(id);
 const ui = {
@@ -165,6 +252,11 @@ const ui = {
   splitter: el('splitter'),
   sidebar: document.querySelector('.sidebar'),
   app: el('app'),
+  gutter: el('gutter'),
+  settingsBtn: el('btn-settings'),
+  settingsPop: el('settings-pop'),
+  settingsRows: el('settings-rows'),
+  settingsReset: el('settings-reset'),
 };
 
 /* ── helpers ─────────────────────────────────────────────────────────────── */
@@ -198,6 +290,19 @@ function fmtSize(bytes) {
 function baseName(rel) {
   const parts = rel.split('/');
   return parts[parts.length - 1];
+}
+
+const MONTHS = ['01', '02', '03', '04', '05', '06', '07', '08', '09', '10', '11', '12'];
+
+/** Compact mtime: today → HH:MM, this year → MM-DD, older → YYYY-MM. */
+function fmtTime(ms) {
+  if (!ms) return '';
+  const date = new Date(ms);
+  const now = new Date();
+  const pad = (value) => String(value).padStart(2, '0');
+  if (date.toDateString() === now.toDateString()) return `${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  if (date.getFullYear() === now.getFullYear()) return `${MONTHS[date.getMonth()]}-${pad(date.getDate())}`;
+  return `${date.getFullYear()}-${MONTHS[date.getMonth()]}`;
 }
 
 const ICON_FOLDER =
@@ -245,7 +350,7 @@ function renderCrumb() {
 
 /* ── tree ────────────────────────────────────────────────────────────────── */
 
-function rowEl({ rel, name, dir, size, changed, touched, hits, ignored }, options = {}) {
+function rowEl({ rel, name, dir, size, mtimeMs, changed, touched, hits, ignored }, options = {}) {
   const row = document.createElement('div');
   row.className = 'row';
   if (dir && ignored) row.classList.add('dim');
@@ -279,6 +384,11 @@ function rowEl({ rel, name, dir, size, changed, touched, hits, ignored }, option
     const sub = document.createElement('span');
     sub.className = 'sub';
     sub.textContent = `${hits}×`;
+    row.appendChild(sub);
+  } else if (!dir && S.settings.showModTime) {
+    const sub = document.createElement('span');
+    sub.className = 'sub';
+    sub.textContent = fmtTime(mtimeMs);
     row.appendChild(sub);
   } else if (!dir && size) {
     const sub = document.createElement('span');
@@ -498,9 +608,10 @@ function showFile(file) {
   S.dirty = false;
   resetEmpty();
   ui.editor.value = file.kind === 'text' ? file.content : '';
+  renderGutter();
   ui.save.disabled = true;
   ui.modeSwitch.hidden = file.kind !== 'text';
-  S.mode = 'preview';
+  S.mode = file.flavor === 'markdown' && S.settings.markdownView === 'source' ? 'source' : 'preview';
 
   if (file.kind === 'image') {
     setPanels({ media: true });
@@ -552,7 +663,12 @@ ui.editor.addEventListener('input', () => {
   if (!file) return;
   S.dirty = ui.editor.value !== file.content;
   ui.save.disabled = !S.dirty;
+  renderGutter();
   renderCrumb();
+});
+
+ui.editor.addEventListener('scroll', () => {
+  ui.gutter.scrollTop = ui.editor.scrollTop;
 });
 
 document.addEventListener('keydown', (event) => {
@@ -649,6 +765,7 @@ function hideCtxMenu() {
 
 document.addEventListener('click', (event) => {
   if (!ui.ctxmenu.contains(event.target)) hideCtxMenu();
+  if (!ui.settingsPop.contains(event.target) && event.target !== ui.settingsBtn) toggleSettingsPop(false);
 });
 document.addEventListener('scroll', hideCtxMenu, true);
 
@@ -673,6 +790,99 @@ async function addToComposer(rel) {
     }
   }
 }
+
+/* ── settings ────────────────────────────────────────────────────────────── */
+
+function settingValue(key) {
+  return S.settings[key];
+}
+
+function isOverridden(key) {
+  return S.overrides.includes(key);
+}
+
+function applySettings() {
+  const { codeFontSize, wrapLongLines, showLineNumbers } = S.settings;
+  ui.editor.style.fontSize = codeFontSize > 0 ? `${codeFontSize}px` : '';
+  ui.gutter.style.fontSize = codeFontSize > 0 ? `${codeFontSize}px` : '';
+  ui.editor.classList.toggle('wrap', Boolean(wrapLongLines));
+  ui.gutter.hidden = !showLineNumbers;
+  if (showLineNumbers) renderGutter();
+  renderSettingsRows();
+  renderFoot();
+}
+
+function renderGutter() {
+  if (ui.gutter.hidden) return;
+  const lines = ui.editor.value.split('\n').length;
+  const width = String(lines).length;
+  let out = '';
+  for (let index = 1; index <= lines; index += 1) {
+    out += `${String(index).padStart(width, ' ')}\n`;
+  }
+  ui.gutter.textContent = out;
+  ui.gutter.scrollTop = ui.editor.scrollTop;
+}
+
+function renderSettingsRows() {
+  ui.settingsRows.innerHTML = '';
+  for (const item of QUICK_SETTINGS) {
+    const on = item.cycle ? settingValue(item.key) === item.cycle[1] : Boolean(settingValue(item.key));
+    const row = document.createElement('div');
+    row.className = `prow${on ? ' on' : ''}`;
+    row.dataset.key = item.key;
+
+    const box = document.createElement('span');
+    box.className = 'box';
+    box.textContent = on ? '✓' : '';
+
+    const label = document.createElement('span');
+    label.className = 'prow-label';
+    label.textContent = item.label;
+
+    row.append(box, label);
+
+    if (item.cycle) {
+      const value = document.createElement('span');
+      value.className = 'prow-value';
+      value.textContent = settingValue(item.key) === 'recent' ? '开' : '关';
+      row.appendChild(value);
+    }
+
+    if (isOverridden(item.key)) {
+      const dot = document.createElement('span');
+      dot.className = 'prow-dot';
+      dot.title = '已在面板里改过（覆盖了设置页的值）';
+      row.appendChild(dot);
+    }
+
+    row.addEventListener('click', () => {
+      const next = item.cycle
+        ? (settingValue(item.key) === item.cycle[1] ? item.cycle[0] : item.cycle[1])
+        : !settingValue(item.key);
+      send({ type: 'setSetting', key: item.key, value: next, rel: '' });
+    });
+    ui.settingsRows.appendChild(row);
+  }
+}
+
+function toggleSettingsPop(force) {
+  const open = typeof force === 'boolean' ? force : ui.settingsPop.hidden;
+  ui.settingsPop.hidden = !open;
+  ui.settingsBtn.setAttribute('aria-expanded', String(open));
+  if (open) renderSettingsRows();
+}
+
+ui.settingsBtn.addEventListener('click', (event) => {
+  event.stopPropagation();
+  toggleSettingsPop();
+});
+
+ui.settingsPop.addEventListener('click', (event) => event.stopPropagation());
+
+ui.settingsReset.addEventListener('click', () => {
+  send({ type: 'resetSettings' });
+});
 
 /* ── sidebar tabs / search ───────────────────────────────────────────────── */
 
@@ -907,7 +1117,7 @@ function handle(message) {
       }
       for (const dir of dirsToRefresh) send({ type: 'listDir', rel: dir });
       if (S.current && paths.includes(S.current.rel)) {
-        if (S.dirty) {
+        if (S.dirty || S.settings.externalChange === 'ask') {
           showBanner('磁盘上的版本已更新', '重新载入', () => {
             if (S.current) send({ type: 'open', rel: S.current.rel });
           });
@@ -915,6 +1125,14 @@ function handle(message) {
           send({ type: 'open', rel: S.current.rel });
         }
       }
+      break;
+    }
+    case 'settings': {
+      S.settings = { ...S.settings, ...(message.settings ?? {}) };
+      if (Array.isArray(message.overridableKeys)) S.overridable = message.overridableKeys;
+      if (Array.isArray(message.overrides)) S.overrides = message.overrides;
+      applySettings();
+      if (message.reset) toast('已恢复默认设置');
       break;
     }
     case 'toast':
@@ -952,6 +1170,7 @@ function syncThemeMode() {
 }
 
 syncThemeMode();
+applySettings();
 bridge.onMessage(handle);
 send({ type: 'ready' });
 send({ type: 'touched' });

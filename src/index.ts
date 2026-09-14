@@ -4,21 +4,83 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   classify,
+  DEFAULT_LIST_OPTIONS,
   findFinchDataRoot,
-  IGNORED_DIRS,
+  isIgnoredFolder,
   readDirEntries,
   resolveInside,
   toRel,
   type DirEntry,
+  type ListOptions,
 } from './paths.js';
 import { collectTouchedFiles, findTranscript, readSessionMeta, type TouchedFile } from './session.js';
 
 const MAX_TEXT_BYTES = 2 * 1024 * 1024;
-const SCAN_MAX_FILES = 8000;
-const SCAN_MAX_DEPTH = 10;
 const SCAN_TTL_MS = 4000;
 const TOUCHED_TTL_MS = 3000;
 const WATCH_DEBOUNCE_MS = 350;
+
+export interface ResolvedSettings {
+  showHidden: boolean;
+  textOnly: boolean;
+  hideIgnoredFolders: boolean;
+  ignoreFolders: string;
+  sortOrder: 'name' | 'recent';
+  showModTime: boolean;
+  scanLimit: number;
+  scanDepth: number;
+  markdownView: 'preview' | 'source';
+  codeFontSize: number;
+  wrapLongLines: boolean;
+  showLineNumbers: boolean;
+  externalChange: 'auto' | 'ask';
+}
+
+/**
+ * Manifest `finch.settings.fields`. Finch only persists a value once the user
+ * saves the settings form, so `ctx.settings.get()` stays `undefined` until then
+ * — these defaults are the single fallback used everywhere.
+ */
+const SETTING_DEFAULTS: ResolvedSettings = {
+  showHidden: false,
+  textOnly: false,
+  hideIgnoredFolders: false,
+  ignoreFolders: 'node_modules\ndist\nbuild\nout\ntarget\ncoverage\n__pycache__\n.venv',
+  sortOrder: 'name',
+  showModTime: false,
+  scanLimit: 8000,
+  scanDepth: 10,
+  markdownView: 'preview',
+  codeFontSize: 0,
+  wrapLongLines: false,
+  showLineNumbers: false,
+  externalChange: 'auto',
+};
+
+type SettingsKey = keyof typeof SETTING_DEFAULTS;
+
+/** Settings the panel can flip instantly; everything else needs the native form. */
+const OVERRIDABLE_KEYS: SettingsKey[] = [
+  'showHidden',
+  'textOnly',
+  'hideIgnoredFolders',
+  'sortOrder',
+  'showModTime',
+];
+
+/** Changing these invalidates the directory listings and the scan cache. */
+const LISTING_KEYS: SettingsKey[] = [
+  'showHidden',
+  'textOnly',
+  'hideIgnoredFolders',
+  'sortOrder',
+  'showModTime',
+  'scanLimit',
+  'scanDepth',
+  'ignoreFolders',
+];
+
+const OVERRIDES_STORAGE_KEY = 'panelOverrides';
 
 const TEXT = {
   'zh-CN': {
@@ -91,6 +153,92 @@ export function activate(ctx: finch.MiniToolContext): void {
   const locale = (): Locale => appLocale;
   const t = (key: keyof typeof TEXT['en-US']): string => TEXT[locale()][key];
 
+  /* ── settings ──────────────────────────────────────────────────────────── */
+
+  /**
+   * `ctx.storage` is async, but `settings()` is read on every listing and every
+   * panel message. So the override layer is loaded once at activation, kept in
+   * memory, and mirrored back to storage on change.
+   */
+  let overrideCache: Partial<Record<SettingsKey, unknown>> = {};
+
+  function sanitizeOverrides(raw: unknown): Partial<Record<SettingsKey, unknown>> {
+    if (!raw || typeof raw !== 'object') return {};
+    const out: Partial<Record<SettingsKey, unknown>> = {};
+    for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+      if (key in SETTING_DEFAULTS) out[key as SettingsKey] = value;
+    }
+    return out;
+  }
+
+  void ctx.storage
+    .get<unknown>(OVERRIDES_STORAGE_KEY)
+    .then((raw) => {
+      overrideCache = sanitizeOverrides(raw);
+    })
+    .catch(() => undefined);
+
+  function persistOverrides(): void {
+    void ctx.storage.set(OVERRIDES_STORAGE_KEY, overrideCache).catch(() => undefined);
+  }
+
+  /**
+   * Precedence: panel quick-toggle override → native settings form → built-in
+   * default. The override layer exists because saving the native form reloads
+   * the mini tool, which is too heavy for something flipped mid-browse.
+   */
+  function settings(): ResolvedSettings {
+    const manifest = ctx.settings.all() ?? {};
+    const resolved = { ...SETTING_DEFAULTS };
+    for (const key of Object.keys(SETTING_DEFAULTS) as SettingsKey[]) {
+      const pick = overrideCache[key] ?? manifest[key] ?? SETTING_DEFAULTS[key];
+      (resolved as unknown as Record<string, unknown>)[key] = pick ?? SETTING_DEFAULTS[key];
+    }
+    return resolved;
+  }
+
+  function settingsPayload(): Record<string, unknown> {
+    return {
+      settings: settings(),
+      overridableKeys: OVERRIDABLE_KEYS,
+      overrides: Object.keys(overrideCache),
+    };
+  }
+
+  function ignoreFolderSet(current: ResolvedSettings): Set<string> {
+    const set = new Set<string>();
+    for (const line of String(current.ignoreFolders ?? '').split('\n')) {
+      const name = line.trim();
+      if (name) set.add(name);
+    }
+    return set;
+  }
+
+  function listOptions(current: ResolvedSettings): ListOptions {
+    return {
+      ...DEFAULT_LIST_OPTIONS,
+      showHidden: Boolean(current.showHidden),
+      textOnly: Boolean(current.textOnly),
+      hideIgnoredFolders: Boolean(current.hideIgnoredFolders),
+      ignoreFolders: ignoreFolderSet(current),
+      sortOrder: current.sortOrder === 'recent' ? 'recent' : 'name',
+      maxTextBytes: MAX_TEXT_BYTES,
+    };
+  }
+
+  function normalizeSetting(key: SettingsKey, value: unknown): unknown {
+    const fallback = SETTING_DEFAULTS[key];
+    if (typeof fallback === 'boolean') return Boolean(value);
+    if (typeof fallback === 'number') {
+      const num = Number(value);
+      return Number.isFinite(num) ? num : fallback;
+    }
+    if (key === 'sortOrder') return value === 'recent' ? 'recent' : 'name';
+    if (key === 'markdownView') return value === 'source' ? 'source' : 'preview';
+    if (key === 'externalChange') return value === 'ask' ? 'ask' : 'auto';
+    return typeof value === 'string' ? value : fallback;
+  }
+
   /* ── session state ─────────────────────────────────────────────────────── */
 
   function keyOf(panel: finch.AppPanel): string {
@@ -160,20 +308,25 @@ export function activate(ctx: finch.MiniToolContext): void {
     const now = Date.now();
     if (!force && state.scan && now - state.scan.at < SCAN_TTL_MS) return state.scan.files;
 
+    const current = settings();
+    const options = listOptions(current);
+    const limit = Math.max(100, Number(current.scanLimit) || SETTING_DEFAULTS.scanLimit);
+    const maxDepth = Math.max(1, Number(current.scanDepth) || SETTING_DEFAULTS.scanDepth);
+
     const files: ScanCache['files'] = [];
     const stack: { abs: string; depth: number }[] = [{ abs: state.root, depth: 0 }];
-    while (stack.length && files.length < SCAN_MAX_FILES) {
+    while (stack.length && files.length < limit) {
       const { abs, depth } = stack.pop()!;
-      if (depth > SCAN_MAX_DEPTH) continue;
+      if (depth > maxDepth) continue;
       let entries: DirEntry[];
       try {
-        entries = readDirEntries(state.root, toRel(state.root, abs));
+        entries = readDirEntries(state.root, toRel(state.root, abs), options);
       } catch {
         continue;
       }
       for (const entry of entries) {
         if (entry.dir) {
-          if (IGNORED_DIRS.has(entry.name)) continue;
+          if (isIgnoredFolder(entry.name, options)) continue;
           stack.push({ abs: path.join(abs, entry.name), depth: depth + 1 });
         } else {
           files.push({ rel: entry.rel, mtimeMs: entry.mtimeMs, size: entry.size });
@@ -198,7 +351,8 @@ export function activate(ctx: finch.MiniToolContext): void {
       state.watcher = fs.watch(state.root, { recursive: true }, (_event, filename) => {
         if (!filename) return;
         const rel = String(filename).split(path.sep).join('/');
-        if (rel.split('/').some((part) => IGNORED_DIRS.has(part))) return;
+        const options = listOptions(settings());
+        if (rel.split('/').some((part) => isIgnoredFolder(part, options))) return;
         state.pendingPaths.add(rel);
         if (state.flushTimer) clearTimeout(state.flushTimer);
         state.flushTimer = setTimeout(() => {
@@ -383,11 +537,13 @@ export function activate(ctx: finch.MiniToolContext): void {
       locale: locale(),
       canEdit: true,
       sessionStartedAtMs: state.startedAtMs,
+      ...settingsPayload(),
     };
   }
 
   function listDir(state: SessionState, rel: string) {
-    const entries = readDirEntries(state.root, rel);
+    const current = settings();
+    const entries = readDirEntries(state.root, rel, listOptions(current));
     const changed = changedSet(state);
     const touched = touchedFor(state);
     const touchMap = new Map(touched.map((item) => [item.rel, item]));
@@ -484,6 +640,29 @@ export function activate(ctx: finch.MiniToolContext): void {
         await panel.postMessage(snapshot(state, panel));
         await panel.postMessage(listDir(state, String(message.rel ?? '')));
         return;
+      case 'setSetting': {
+        const key = String(message.key ?? '') as SettingsKey;
+        if (!(key in SETTING_DEFAULTS) || !OVERRIDABLE_KEYS.includes(key)) {
+          await panel.postMessage({ type: 'error', message: t('failed') });
+          return;
+        }
+        const overrides = overrideCache;
+        overrides[key] = normalizeSetting(key, message.value);
+        persistOverrides();
+        if (LISTING_KEYS.includes(key)) state.scan = null;
+        await panel.postMessage({ type: 'settings', ...settingsPayload() });
+        await panel.postMessage(listDir(state, String(message.rel ?? '')));
+        if (String(message.rel ?? '') !== '') await panel.postMessage(listDir(state, ''));
+        return;
+      }
+      case 'resetSettings': {
+        overrideCache = {};
+        persistOverrides();
+        state.scan = null;
+        await panel.postMessage({ type: 'settings', ...settingsPayload(), reset: true });
+        await panel.postMessage(listDir(state, ''));
+        return;
+      }
       default:
         return;
     }

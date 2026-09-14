@@ -95,7 +95,34 @@ export interface DirEntry {
   changed?: boolean;
 }
 
-export function readDirEntries(root: string, relDir: string): DirEntry[] {
+export interface ListOptions {
+  /** Include entries whose name starts with a dot. */
+  showHidden: boolean;
+  /** Extra folder names treated as ignored, on top of the built-in list. */
+  ignoreFolders: ReadonlySet<string>;
+  /** Remove ignored folders from the listing instead of only marking them. */
+  hideIgnoredFolders: boolean;
+  /** Hide images and binary files, keeping directories and text files. */
+  textOnly: boolean;
+  sortOrder: 'name' | 'recent';
+  /** Byte ceiling for treating a file as editable text. */
+  maxTextBytes: number;
+}
+
+export const DEFAULT_LIST_OPTIONS: ListOptions = {
+  showHidden: false,
+  ignoreFolders: new Set(),
+  hideIgnoredFolders: false,
+  textOnly: false,
+  sortOrder: 'name',
+  maxTextBytes: 2 * 1024 * 1024,
+};
+
+export function isIgnoredFolder(name: string, options: ListOptions): boolean {
+  return IGNORED_DIRS.has(name) || options.ignoreFolders.has(name);
+}
+
+export function readDirEntries(root: string, relDir: string, options: ListOptions = DEFAULT_LIST_OPTIONS): DirEntry[] {
   const absDir = resolveInside(root, relDir);
   if (!absDir) return [];
   let names: string[];
@@ -108,6 +135,7 @@ export function readDirEntries(root: string, relDir: string): DirEntry[] {
   const entries: DirEntry[] = [];
   for (const name of names) {
     if (IGNORED_FILES.has(name)) continue;
+    if (!options.showHidden && name.startsWith('.')) continue;
     const abs = path.join(absDir, name);
     let stat: fs.Stats;
     try {
@@ -117,6 +145,12 @@ export function readDirEntries(root: string, relDir: string): DirEntry[] {
     }
     const dir = stat.isDirectory();
     if (!dir && !stat.isFile() && !stat.isSymbolicLink()) continue;
+    const ignored = dir && isIgnoredFolder(name, options);
+    if (ignored && options.hideIgnoredFolders) continue;
+    if (!dir && options.textOnly) {
+      const classification = classify(abs, stat.size, options.maxTextBytes);
+      if (classification.kind === 'image' || classification.kind === 'binary') continue;
+    }
     const rel = toRel(root, abs);
     entries.push({
       name,
@@ -124,13 +158,19 @@ export function readDirEntries(root: string, relDir: string): DirEntry[] {
       dir,
       size: dir ? 0 : stat.size,
       mtimeMs: stat.mtimeMs,
-      ignored: dir && IGNORED_DIRS.has(name),
+      ignored,
     });
   }
 
+  const byName = (a: DirEntry, b: DirEntry) =>
+    a.name.localeCompare(b.name, 'zh-Hans-CN', { numeric: true, sensitivity: 'base' });
+
   entries.sort((a, b) => {
     if (a.dir !== b.dir) return a.dir ? -1 : 1;
-    return a.name.localeCompare(b.name, 'zh-Hans-CN', { numeric: true, sensitivity: 'base' });
+    if (!a.dir && options.sortOrder === 'recent' && a.mtimeMs !== b.mtimeMs) {
+      return b.mtimeMs - a.mtimeMs;
+    }
+    return byName(a, b);
   });
   return entries;
 }

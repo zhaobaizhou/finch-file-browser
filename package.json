@@ -65,6 +65,107 @@
       "productivity",
       "developer"
     ],
+    "settings": {
+      "fields": [
+        {
+          "key": "showHidden",
+          "type": "boolean",
+          "label": "Show dotfiles and dot-folders",
+          "description": "Include entries whose name starts with a dot, such as .gitignore, .git or .trash. Off by default.",
+          "default": false
+        },
+        {
+          "key": "textOnly",
+          "type": "boolean",
+          "label": "Show text files only",
+          "description": "Hide images and binary files, keeping Markdown, code and plain text.",
+          "default": false
+        },
+        {
+          "key": "hideIgnoredFolders",
+          "type": "boolean",
+          "label": "Hide ignored folders from the tree",
+          "description": "Remove ignored folders (the list below) instead of only greying them out.",
+          "default": false
+        },
+        {
+          "key": "ignoreFolders",
+          "type": "string",
+          "multiline": true,
+          "label": "Extra folder names to ignore",
+          "description": "One per line. These folders are greyed out and skipped when scanning, searching and totalling sizes.",
+          "default": "node_modules\ndist\nbuild\nout\ntarget\ncoverage\n__pycache__\n.venv"
+        },
+        {
+          "key": "sortOrder",
+          "type": "select",
+          "label": "Sort files by",
+          "options": [
+            { "value": "name", "label": "Name (folders first)" },
+            { "value": "recent", "label": "Recently modified first" }
+          ],
+          "default": "name"
+        },
+        {
+          "key": "showModTime",
+          "type": "boolean",
+          "label": "Show modified time",
+          "default": false
+        },
+        {
+          "key": "scanLimit",
+          "type": "number",
+          "label": "Scan limit (files)",
+          "description": "Upper bound for the background scan behind search, size totals and change highlighting.",
+          "default": 8000
+        },
+        {
+          "key": "scanDepth",
+          "type": "number",
+          "label": "Scan depth",
+          "default": 10
+        },
+        {
+          "key": "markdownView",
+          "type": "select",
+          "label": "Open Markdown in",
+          "options": [
+            { "value": "preview", "label": "Rendered preview" },
+            { "value": "source", "label": "Source editor" }
+          ],
+          "default": "preview"
+        },
+        {
+          "key": "codeFontSize",
+          "type": "number",
+          "label": "Source font size (px)",
+          "description": "0 follows the Finch font size setting.",
+          "default": 0
+        },
+        {
+          "key": "wrapLongLines",
+          "type": "boolean",
+          "label": "Wrap long lines in the source editor",
+          "default": false
+        },
+        {
+          "key": "showLineNumbers",
+          "type": "boolean",
+          "label": "Show line numbers in the source editor",
+          "default": false
+        },
+        {
+          "key": "externalChange",
+          "type": "select",
+          "label": "When the open file changes on disk",
+          "options": [
+            { "value": "auto", "label": "Reload automatically" },
+            { "value": "ask", "label": "Always ask first" }
+          ],
+          "default": "auto"
+        }
+      ]
+    },
     "contributes": {
       "iconPacks": [
         {

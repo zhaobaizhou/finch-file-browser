@@ -5,5 +5,66 @@
     "open-file-browser": {
       "tooltip": "打开会话文件"
     }
+  },
+  "settings": {
+    "fields": {
+      "showHidden": {
+        "label": "显示以「.」开头的文件与文件夹",
+        "description": "例如 .gitignore、.git、.trash。默认不显示。"
+      },
+      "textOnly": {
+        "label": "只显示文本类文件",
+        "description": "隐藏图片和二进制文件，只留 Markdown、代码和纯文本。"
+      },
+      "hideIgnoredFolders": {
+        "label": "在文件树里隐藏被忽略的目录",
+        "description": "开启后从树里移除下面那份忽略名单，而不是只把它们灰显。"
+      },
+      "ignoreFolders": {
+        "label": "额外忽略的目录名",
+        "description": "一行一个。这些目录会被灰显，并在扫描、搜索和统计大小时跳过。"
+      },
+      "sortOrder": {
+        "label": "文件排序方式",
+        "options": {
+          "name": "按名称（目录优先）",
+          "recent": "最近修改在前"
+        }
+      },
+      "showModTime": {
+        "label": "显示修改时间"
+      },
+      "scanLimit": {
+        "label": "扫描上限（文件数）",
+        "description": "搜索、大小统计和改动高亮背后的后台扫描上限。"
+      },
+      "scanDepth": {
+        "label": "扫描深度"
+      },
+      "markdownView": {
+        "label": "Markdown 打开方式",
+        "options": {
+          "preview": "渲染后的预览",
+          "source": "源码编辑器"
+        }
+      },
+      "codeFontSize": {
+        "label": "源码区字号（px）",
+        "description": "填 0 表示跟随 Finch 的字号设置。"
+      },
+      "wrapLongLines": {
+        "label": "源码区自动换行"
+      },
+      "showLineNumbers": {
+        "label": "源码区显示行号"
+      },
+      "externalChange": {
+        "label": "当前文件在磁盘上被修改时",
+        "options": {
+          "auto": "自动重新载入",
+          "ask": "总是先问我"
+        }
+      }
+    }
   }
 }

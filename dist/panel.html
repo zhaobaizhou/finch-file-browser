@@ -18,8 +18,17 @@
           <button class="btn" id="btn-undo" type="button" title="把磁盘上的文件回滚到上一次保存之前的版本" disabled>回滚上次保存</button>
           <button class="btn" id="btn-external" type="button" title="用系统默认程序打开这个文件" disabled>用系统打开</button>
           <button class="btn primary" id="btn-save" type="button" title="把编辑内容写回原文件（⌘S）" disabled>保存</button>
+          <button class="btn icon" id="btn-settings" type="button" title="显示与排序" aria-haspopup="true" aria-expanded="false">⋯</button>
         </div>
       </header>
+      <div class="popover" id="settings-pop" hidden>
+        <div class="popover-title">显示与排序</div>
+        <div id="settings-rows"></div>
+        <div class="popover-foot">
+          <button class="link" id="settings-reset" type="button">恢复默认</button>
+          <span id="settings-hint">更多配置在「小工具箱 → 对话文件 → 设置」</span>
+        </div>
+      </div>
 
       <main class="body">
         <section class="viewer" id="viewer">
@@ -34,6 +43,7 @@
           </div>
           <div class="preview markdown-body" id="preview" hidden></div>
           <div class="editor-wrap" id="editor-wrap" hidden>
+            <div class="gutter" id="gutter" hidden></div>
             <textarea id="editor" spellcheck="false"></textarea>
           </div>
           <div class="media" id="media" hidden></div>

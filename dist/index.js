@@ -158,7 +158,18 @@ function toRel(root, abs) {
   const rel = path.relative(root, abs);
   return rel.split(path.sep).join("/");
 }
-function readDirEntries(root, relDir) {
+var DEFAULT_LIST_OPTIONS = {
+  showHidden: false,
+  ignoreFolders: /* @__PURE__ */ new Set(),
+  hideIgnoredFolders: false,
+  textOnly: false,
+  sortOrder: "name",
+  maxTextBytes: 2 * 1024 * 1024
+};
+function isIgnoredFolder(name, options) {
+  return IGNORED_DIRS.has(name) || options.ignoreFolders.has(name);
+}
+function readDirEntries(root, relDir, options = DEFAULT_LIST_OPTIONS) {
   const absDir = resolveInside(root, relDir);
   if (!absDir) return [];
   let names;
@@ -170,6 +181,7 @@ function readDirEntries(root, relDir) {
   const entries = [];
   for (const name of names) {
     if (IGNORED_FILES.has(name)) continue;
+    if (!options.showHidden && name.startsWith(".")) continue;
     const abs = path.join(absDir, name);
     let stat;
     try {
@@ -179,6 +191,12 @@ function readDirEntries(root, relDir) {
     }
     const dir = stat.isDirectory();
     if (!dir && !stat.isFile() && !stat.isSymbolicLink()) continue;
+    const ignored = dir && isIgnoredFolder(name, options);
+    if (ignored && options.hideIgnoredFolders) continue;
+    if (!dir && options.textOnly) {
+      const classification = classify(abs, stat.size, options.maxTextBytes);
+      if (classification.kind === "image" || classification.kind === "binary") continue;
+    }
     const rel = toRel(root, abs);
     entries.push({
       name,
@@ -186,12 +204,16 @@ function readDirEntries(root, relDir) {
       dir,
       size: dir ? 0 : stat.size,
       mtimeMs: stat.mtimeMs,
-      ignored: dir && IGNORED_DIRS.has(name)
+      ignored
     });
   }
+  const byName = (a, b) => a.name.localeCompare(b.name, "zh-Hans-CN", { numeric: true, sensitivity: "base" });
   entries.sort((a, b) => {
     if (a.dir !== b.dir) return a.dir ? -1 : 1;
-    return a.name.localeCompare(b.name, "zh-Hans-CN", { numeric: true, sensitivity: "base" });
+    if (!a.dir && options.sortOrder === "recent" && a.mtimeMs !== b.mtimeMs) {
+      return b.mtimeMs - a.mtimeMs;
+    }
+    return byName(a, b);
   });
   return entries;
 }
@@ -362,11 +384,42 @@ function collectTouchedFiles(root, transcriptPath) {
 
 // src/index.ts
 var MAX_TEXT_BYTES = 2 * 1024 * 1024;
-var SCAN_MAX_FILES = 8e3;
-var SCAN_MAX_DEPTH = 10;
 var SCAN_TTL_MS = 4e3;
 var TOUCHED_TTL_MS = 3e3;
 var WATCH_DEBOUNCE_MS = 350;
+var SETTING_DEFAULTS = {
+  showHidden: false,
+  textOnly: false,
+  hideIgnoredFolders: false,
+  ignoreFolders: "node_modules\ndist\nbuild\nout\ntarget\ncoverage\n__pycache__\n.venv",
+  sortOrder: "name",
+  showModTime: false,
+  scanLimit: 8e3,
+  scanDepth: 10,
+  markdownView: "preview",
+  codeFontSize: 0,
+  wrapLongLines: false,
+  showLineNumbers: false,
+  externalChange: "auto"
+};
+var OVERRIDABLE_KEYS = [
+  "showHidden",
+  "textOnly",
+  "hideIgnoredFolders",
+  "sortOrder",
+  "showModTime"
+];
+var LISTING_KEYS = [
+  "showHidden",
+  "textOnly",
+  "hideIgnoredFolders",
+  "sortOrder",
+  "showModTime",
+  "scanLimit",
+  "scanDepth",
+  "ignoreFolders"
+];
+var OVERRIDES_STORAGE_KEY = "panelOverrides";
 var TEXT = {
   "zh-CN": {
     noWorkspace: "\u8FD9\u4E2A\u5BF9\u8BDD\u8FD8\u6CA1\u6709\u7ED1\u5B9A\u6587\u4EF6\u5939",
@@ -408,6 +461,68 @@ function activate(ctx) {
   }).catch(() => void 0);
   const locale = () => appLocale;
   const t = (key) => TEXT[locale()][key];
+  let overrideCache = {};
+  function sanitizeOverrides(raw) {
+    if (!raw || typeof raw !== "object") return {};
+    const out = {};
+    for (const [key, value] of Object.entries(raw)) {
+      if (key in SETTING_DEFAULTS) out[key] = value;
+    }
+    return out;
+  }
+  void ctx.storage.get(OVERRIDES_STORAGE_KEY).then((raw) => {
+    overrideCache = sanitizeOverrides(raw);
+  }).catch(() => void 0);
+  function persistOverrides() {
+    void ctx.storage.set(OVERRIDES_STORAGE_KEY, overrideCache).catch(() => void 0);
+  }
+  function settings() {
+    const manifest = ctx.settings.all() ?? {};
+    const resolved = { ...SETTING_DEFAULTS };
+    for (const key of Object.keys(SETTING_DEFAULTS)) {
+      const pick = overrideCache[key] ?? manifest[key] ?? SETTING_DEFAULTS[key];
+      resolved[key] = pick ?? SETTING_DEFAULTS[key];
+    }
+    return resolved;
+  }
+  function settingsPayload() {
+    return {
+      settings: settings(),
+      overridableKeys: OVERRIDABLE_KEYS,
+      overrides: Object.keys(overrideCache)
+    };
+  }
+  function ignoreFolderSet(current) {
+    const set = /* @__PURE__ */ new Set();
+    for (const line of String(current.ignoreFolders ?? "").split("\n")) {
+      const name = line.trim();
+      if (name) set.add(name);
+    }
+    return set;
+  }
+  function listOptions(current) {
+    return {
+      ...DEFAULT_LIST_OPTIONS,
+      showHidden: Boolean(current.showHidden),
+      textOnly: Boolean(current.textOnly),
+      hideIgnoredFolders: Boolean(current.hideIgnoredFolders),
+      ignoreFolders: ignoreFolderSet(current),
+      sortOrder: current.sortOrder === "recent" ? "recent" : "name",
+      maxTextBytes: MAX_TEXT_BYTES
+    };
+  }
+  function normalizeSetting(key, value) {
+    const fallback = SETTING_DEFAULTS[key];
+    if (typeof fallback === "boolean") return Boolean(value);
+    if (typeof fallback === "number") {
+      const num = Number(value);
+      return Number.isFinite(num) ? num : fallback;
+    }
+    if (key === "sortOrder") return value === "recent" ? "recent" : "name";
+    if (key === "markdownView") return value === "source" ? "source" : "preview";
+    if (key === "externalChange") return value === "ask" ? "ask" : "auto";
+    return typeof value === "string" ? value : fallback;
+  }
   function keyOf(panel) {
     return panel.sessionId ?? `scope:${panel.id}`;
   }
@@ -465,20 +580,24 @@ function activate(ctx) {
   function scanOf(state, force = false) {
     const now = Date.now();
     if (!force && state.scan && now - state.scan.at < SCAN_TTL_MS) return state.scan.files;
+    const current = settings();
+    const options = listOptions(current);
+    const limit = Math.max(100, Number(current.scanLimit) || SETTING_DEFAULTS.scanLimit);
+    const maxDepth = Math.max(1, Number(current.scanDepth) || SETTING_DEFAULTS.scanDepth);
     const files = [];
     const stack = [{ abs: state.root, depth: 0 }];
-    while (stack.length && files.length < SCAN_MAX_FILES) {
+    while (stack.length && files.length < limit) {
       const { abs, depth } = stack.pop();
-      if (depth > SCAN_MAX_DEPTH) continue;
+      if (depth > maxDepth) continue;
       let entries;
       try {
-        entries = readDirEntries(state.root, toRel(state.root, abs));
+        entries = readDirEntries(state.root, toRel(state.root, abs), options);
       } catch {
         continue;
       }
       for (const entry of entries) {
         if (entry.dir) {
-          if (IGNORED_DIRS.has(entry.name)) continue;
+          if (isIgnoredFolder(entry.name, options)) continue;
           stack.push({ abs: path3.join(abs, entry.name), depth: depth + 1 });
         } else {
           files.push({ rel: entry.rel, mtimeMs: entry.mtimeMs, size: entry.size });
@@ -499,7 +618,8 @@ function activate(ctx) {
       state.watcher = fs3.watch(state.root, { recursive: true }, (_event, filename) => {
         if (!filename) return;
         const rel = String(filename).split(path3.sep).join("/");
-        if (rel.split("/").some((part) => IGNORED_DIRS.has(part))) return;
+        const options = listOptions(settings());
+        if (rel.split("/").some((part) => isIgnoredFolder(part, options))) return;
         state.pendingPaths.add(rel);
         if (state.flushTimer) clearTimeout(state.flushTimer);
         state.flushTimer = setTimeout(() => {
@@ -666,11 +786,13 @@ function activate(ctx) {
       spaceName: panel.spaceName ?? ctx.workspace.spaceName ?? "",
       locale: locale(),
       canEdit: true,
-      sessionStartedAtMs: state.startedAtMs
+      sessionStartedAtMs: state.startedAtMs,
+      ...settingsPayload()
     };
   }
   function listDir(state, rel) {
-    const entries = readDirEntries(state.root, rel);
+    const current = settings();
+    const entries = readDirEntries(state.root, rel, listOptions(current));
     const changed = changedSet(state);
     const touched = touchedFor(state);
     const touchMap = new Map(touched.map((item) => [item.rel, item]));
@@ -760,6 +882,29 @@ function activate(ctx) {
         await panel.postMessage(snapshot(state, panel));
         await panel.postMessage(listDir(state, String(message.rel ?? "")));
         return;
+      case "setSetting": {
+        const key = String(message.key ?? "");
+        if (!(key in SETTING_DEFAULTS) || !OVERRIDABLE_KEYS.includes(key)) {
+          await panel.postMessage({ type: "error", message: t("failed") });
+          return;
+        }
+        const overrides = overrideCache;
+        overrides[key] = normalizeSetting(key, message.value);
+        persistOverrides();
+        if (LISTING_KEYS.includes(key)) state.scan = null;
+        await panel.postMessage({ type: "settings", ...settingsPayload() });
+        await panel.postMessage(listDir(state, String(message.rel ?? "")));
+        if (String(message.rel ?? "") !== "") await panel.postMessage(listDir(state, ""));
+        return;
+      }
+      case "resetSettings": {
+        overrideCache = {};
+        persistOverrides();
+        state.scan = null;
+        await panel.postMessage({ type: "settings", ...settingsPayload(), reset: true });
+        await panel.postMessage(listDir(state, ""));
+        return;
+      }
       default:
         return;
     }

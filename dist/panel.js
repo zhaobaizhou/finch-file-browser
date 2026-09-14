@@ -18082,20 +18082,63 @@ ${text2}</tr>
       "": [
         { name: "docs", rel: "docs", dir: true, size: 0, mtimeMs: 0, ignored: false },
         { name: "reference", rel: "reference", dir: true, size: 0, mtimeMs: 0, ignored: false },
+        { name: "node_modules", rel: "node_modules", dir: true, size: 0, mtimeMs: 0, ignored: true },
         { name: ".git", rel: ".git", dir: true, size: 0, mtimeMs: 0, ignored: true },
         { name: "README.md", rel: "README.md", dir: false, size: 1120, mtimeMs: Date.now(), ignored: false, changed: true },
-        { name: "package.json", rel: "package.json", dir: false, size: 890, mtimeMs: 0, ignored: false },
-        { name: "capacitor.config.json", rel: "capacitor.config.json", dir: false, size: 320, mtimeMs: 0, ignored: false }
+        { name: ".gitignore", rel: ".gitignore", dir: false, size: 180, mtimeMs: Date.now(), ignored: false },
+        { name: "package.json", rel: "package.json", dir: false, size: 890, mtimeMs: Date.now() - 864e5 * 3, ignored: false },
+        { name: "capacitor.config.json", rel: "capacitor.config.json", dir: false, size: 320, mtimeMs: Date.now() - 864e5 * 40, ignored: false }
       ],
       docs: [
         { name: "APK-EVIDENCE.md", rel: "docs/APK-EVIDENCE.md", dir: false, size: 3120, mtimeMs: Date.now(), ignored: false, changed: true, hits: 4 },
-        { name: "BACKUP-RESTORE.md", rel: "docs/BACKUP-RESTORE.md", dir: false, size: 2048, mtimeMs: 0, ignored: false },
-        { name: "PRODUCT-ROADMAP.md", rel: "docs/PRODUCT-ROADMAP.md", dir: false, size: 4096, mtimeMs: 0, ignored: false, hits: 2 },
-        { name: "REFERENCE.md", rel: "docs/REFERENCE.md", dir: false, size: 1536, mtimeMs: 0, ignored: false }
+        { name: "BACKUP-RESTORE.md", rel: "docs/BACKUP-RESTORE.md", dir: false, size: 2048, mtimeMs: Date.now() - 36e5, ignored: false },
+        { name: "PRODUCT-ROADMAP.md", rel: "docs/PRODUCT-ROADMAP.md", dir: false, size: 4096, mtimeMs: Date.now() - 864e5, ignored: false, hits: 2 },
+        { name: "REFERENCE.md", rel: "docs/REFERENCE.md", dir: false, size: 1536, mtimeMs: Date.now() - 864e5 * 12, ignored: false }
       ],
       reference: [
-        { name: "apk-identity.json", rel: "reference/apk-identity.json", dir: false, size: 640, mtimeMs: 0, ignored: false }
+        { name: "apk-identity.json", rel: "reference/apk-identity.json", dir: false, size: 640, mtimeMs: Date.now() - 864e5 * 2, ignored: false }
       ]
+    };
+    const demoState = {
+      showHidden: false,
+      textOnly: false,
+      hideIgnoredFolders: false,
+      showModTime: false,
+      sortOrder: "name",
+      markdownView: "preview",
+      codeFontSize: 0,
+      wrapLongLines: false,
+      showLineNumbers: false,
+      externalChange: "auto"
+    };
+    const overrides = [];
+    const visibleEntries = (rel) => {
+      const entries2 = (tree[rel] ?? []).filter((entry) => {
+        if (!demoState.showHidden && entry.name.startsWith(".")) return false;
+        if (entry.dir && entry.ignored && demoState.hideIgnoredFolders) return false;
+        return true;
+      });
+      if (demoState.sortOrder === "recent") {
+        return entries2.slice().sort((a, b) => {
+          if (a.dir !== b.dir) return a.dir ? -1 : 1;
+          if (a.dir) return a.name.localeCompare(b.name);
+          return b.mtimeMs - a.mtimeMs;
+        });
+      }
+      return entries2;
+    };
+    const settingsPayload = (reset) => ({
+      type: "settings",
+      settings: demoState,
+      overridableKeys: ["showHidden", "textOnly", "hideIgnoredFolders", "sortOrder", "showModTime"],
+      overrides,
+      ...reset ? { reset: true } : {}
+    });
+    window.__fbDemo = {
+      pushSettings(patch) {
+        Object.assign(demoState, patch);
+        listeners.forEach((listener) => listener(settingsPayload()));
+      }
     };
     const reply = (message) => {
       const emit = (payload) => listeners.forEach((listener) => listener(payload));
@@ -18105,11 +18148,30 @@ ${text2}</tr>
           root: "/Users/baizhou/Demo/ArrowsPuzzle",
           rootLabel: "ArrowsPuzzle",
           locale: "zh-CN",
-          sessionStartedAtMs: Date.now() - 36e5
+          sessionStartedAtMs: Date.now() - 36e5,
+          settings: demoState,
+          overridableKeys: ["showHidden", "textOnly", "hideIgnoredFolders", "sortOrder", "showModTime"],
+          overrides
         });
-        emit({ type: "dir", rel: "", entries: tree[""], changed: ["README.md", "docs/APK-EVIDENCE.md"], touched: [["docs/APK-EVIDENCE.md", 4]] });
+        emit({ type: "dir", rel: "", entries: visibleEntries(""), changed: ["README.md", "docs/APK-EVIDENCE.md"], touched: [["docs/APK-EVIDENCE.md", 4]] });
       } else if (message.type === "listDir") {
-        emit({ type: "dir", rel: message.rel, entries: tree[message.rel] ?? [] });
+        emit({ type: "dir", rel: message.rel, entries: visibleEntries(message.rel) });
+      } else if (message.type === "setSetting") {
+        demoState[message.key] = message.value;
+        if (!overrides.includes(message.key)) overrides.push(message.key);
+        emit(settingsPayload());
+        emit({ type: "dir", rel: "", entries: visibleEntries("") });
+      } else if (message.type === "resetSettings") {
+        Object.assign(demoState, {
+          showHidden: false,
+          textOnly: false,
+          hideIgnoredFolders: false,
+          showModTime: false,
+          sortOrder: "name"
+        });
+        overrides.length = 0;
+        emit(settingsPayload(true));
+        emit({ type: "dir", rel: "", entries: visibleEntries("") });
       } else if (message.type === "open") {
         const name = message.rel.split("/").pop();
         emit({
@@ -18180,8 +18242,29 @@ ${text2}</tr>
     tab: "tree",
     searchResults: null,
     searchQuery: "",
-    diskConflict: null
+    diskConflict: null,
+    settings: {
+      showHidden: false,
+      textOnly: false,
+      hideIgnoredFolders: false,
+      sortOrder: "name",
+      showModTime: false,
+      markdownView: "preview",
+      codeFontSize: 0,
+      wrapLongLines: false,
+      showLineNumbers: false,
+      externalChange: "auto"
+    },
+    overridable: [],
+    overrides: []
   };
+  var QUICK_SETTINGS = [
+    { key: "showHidden", label: "\u663E\u793A\u4EE5\u300C.\u300D\u5F00\u5934\u7684\u6587\u4EF6" },
+    { key: "textOnly", label: "\u53EA\u663E\u793A\u6587\u672C\u7C7B\u6587\u4EF6" },
+    { key: "showModTime", label: "\u663E\u793A\u4FEE\u6539\u65F6\u95F4" },
+    { key: "hideIgnoredFolders", label: "\u9690\u85CF\u88AB\u5FFD\u7565\u7684\u76EE\u5F55" },
+    { key: "sortOrder", label: "\u6700\u8FD1\u4FEE\u6539\u5728\u524D", cycle: ["name", "recent"] }
+  ];
   var el = (id) => document.getElementById(id);
   var ui = {
     crumb: el("crumb"),
@@ -18209,7 +18292,12 @@ ${text2}</tr>
     toast: el("toast"),
     splitter: el("splitter"),
     sidebar: document.querySelector(".sidebar"),
-    app: el("app")
+    app: el("app"),
+    gutter: el("gutter"),
+    settingsBtn: el("btn-settings"),
+    settingsPop: el("settings-pop"),
+    settingsRows: el("settings-rows"),
+    settingsReset: el("settings-reset")
   };
   function send(message) {
     bridge.postMessage(message);
@@ -18237,6 +18325,16 @@ ${text2}</tr>
   function baseName(rel) {
     const parts = rel.split("/");
     return parts[parts.length - 1];
+  }
+  var MONTHS = ["01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12"];
+  function fmtTime(ms) {
+    if (!ms) return "";
+    const date = new Date(ms);
+    const now = /* @__PURE__ */ new Date();
+    const pad = (value) => String(value).padStart(2, "0");
+    if (date.toDateString() === now.toDateString()) return `${pad(date.getHours())}:${pad(date.getMinutes())}`;
+    if (date.getFullYear() === now.getFullYear()) return `${MONTHS[date.getMonth()]}-${pad(date.getDate())}`;
+    return `${date.getFullYear()}-${MONTHS[date.getMonth()]}`;
   }
   var ICON_FOLDER = '<svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h3.6a2 2 0 0 1 1.4.6L11.4 7H19a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></svg>';
   var ICON_FILE = '<svg viewBox="0 0 24 24"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z"/><path d="M14 3v5h5"/></svg>';
@@ -18273,7 +18371,7 @@ ${text2}</tr>
     }
     ui.crumb.title = S.root + (file ? `/${file.rel}` : "");
   }
-  function rowEl({ rel, name, dir, size, changed, touched, hits, ignored }, options2 = {}) {
+  function rowEl({ rel, name, dir, size, mtimeMs, changed, touched, hits, ignored }, options2 = {}) {
     const row = document.createElement("div");
     row.className = "row";
     if (dir && ignored) row.classList.add("dim");
@@ -18303,6 +18401,11 @@ ${text2}</tr>
       const sub = document.createElement("span");
       sub.className = "sub";
       sub.textContent = `${hits}\xD7`;
+      row.appendChild(sub);
+    } else if (!dir && S.settings.showModTime) {
+      const sub = document.createElement("span");
+      sub.className = "sub";
+      sub.textContent = fmtTime(mtimeMs);
       row.appendChild(sub);
     } else if (!dir && size) {
       const sub = document.createElement("span");
@@ -18499,9 +18602,10 @@ ${text2}</tr>
     S.dirty = false;
     resetEmpty();
     ui.editor.value = file.kind === "text" ? file.content : "";
+    renderGutter();
     ui.save.disabled = true;
     ui.modeSwitch.hidden = file.kind !== "text";
-    S.mode = "preview";
+    S.mode = file.flavor === "markdown" && S.settings.markdownView === "source" ? "source" : "preview";
     if (file.kind === "image") {
       setPanels({ media: true });
       ui.media.innerHTML = "";
@@ -18544,7 +18648,11 @@ ${text2}</tr>
     if (!file) return;
     S.dirty = ui.editor.value !== file.content;
     ui.save.disabled = !S.dirty;
+    renderGutter();
     renderCrumb();
+  });
+  ui.editor.addEventListener("scroll", () => {
+    ui.gutter.scrollTop = ui.editor.scrollTop;
   });
   document.addEventListener("keydown", (event) => {
     const meta = event.metaKey || event.ctrlKey;
@@ -18628,6 +18736,7 @@ ${text2}</tr>
   }
   document.addEventListener("click", (event) => {
     if (!ui.ctxmenu.contains(event.target)) hideCtxMenu();
+    if (!ui.settingsPop.contains(event.target) && event.target !== ui.settingsBtn) toggleSettingsPop(false);
   });
   document.addEventListener("scroll", hideCtxMenu, true);
   async function addToComposer(rel) {
@@ -18651,6 +18760,81 @@ ${text2}</tr>
       }
     }
   }
+  function settingValue(key) {
+    return S.settings[key];
+  }
+  function isOverridden(key) {
+    return S.overrides.includes(key);
+  }
+  function applySettings() {
+    const { codeFontSize, wrapLongLines, showLineNumbers } = S.settings;
+    ui.editor.style.fontSize = codeFontSize > 0 ? `${codeFontSize}px` : "";
+    ui.gutter.style.fontSize = codeFontSize > 0 ? `${codeFontSize}px` : "";
+    ui.editor.classList.toggle("wrap", Boolean(wrapLongLines));
+    ui.gutter.hidden = !showLineNumbers;
+    if (showLineNumbers) renderGutter();
+    renderSettingsRows();
+    renderFoot();
+  }
+  function renderGutter() {
+    if (ui.gutter.hidden) return;
+    const lines = ui.editor.value.split("\n").length;
+    const width = String(lines).length;
+    let out = "";
+    for (let index = 1; index <= lines; index += 1) {
+      out += `${String(index).padStart(width, " ")}
+`;
+    }
+    ui.gutter.textContent = out;
+    ui.gutter.scrollTop = ui.editor.scrollTop;
+  }
+  function renderSettingsRows() {
+    ui.settingsRows.innerHTML = "";
+    for (const item of QUICK_SETTINGS) {
+      const on = item.cycle ? settingValue(item.key) === item.cycle[1] : Boolean(settingValue(item.key));
+      const row = document.createElement("div");
+      row.className = `prow${on ? " on" : ""}`;
+      row.dataset.key = item.key;
+      const box = document.createElement("span");
+      box.className = "box";
+      box.textContent = on ? "\u2713" : "";
+      const label = document.createElement("span");
+      label.className = "prow-label";
+      label.textContent = item.label;
+      row.append(box, label);
+      if (item.cycle) {
+        const value = document.createElement("span");
+        value.className = "prow-value";
+        value.textContent = settingValue(item.key) === "recent" ? "\u5F00" : "\u5173";
+        row.appendChild(value);
+      }
+      if (isOverridden(item.key)) {
+        const dot = document.createElement("span");
+        dot.className = "prow-dot";
+        dot.title = "\u5DF2\u5728\u9762\u677F\u91CC\u6539\u8FC7\uFF08\u8986\u76D6\u4E86\u8BBE\u7F6E\u9875\u7684\u503C\uFF09";
+        row.appendChild(dot);
+      }
+      row.addEventListener("click", () => {
+        const next = item.cycle ? settingValue(item.key) === item.cycle[1] ? item.cycle[0] : item.cycle[1] : !settingValue(item.key);
+        send({ type: "setSetting", key: item.key, value: next, rel: "" });
+      });
+      ui.settingsRows.appendChild(row);
+    }
+  }
+  function toggleSettingsPop(force) {
+    const open = typeof force === "boolean" ? force : ui.settingsPop.hidden;
+    ui.settingsPop.hidden = !open;
+    ui.settingsBtn.setAttribute("aria-expanded", String(open));
+    if (open) renderSettingsRows();
+  }
+  ui.settingsBtn.addEventListener("click", (event) => {
+    event.stopPropagation();
+    toggleSettingsPop();
+  });
+  ui.settingsPop.addEventListener("click", (event) => event.stopPropagation());
+  ui.settingsReset.addEventListener("click", () => {
+    send({ type: "resetSettings" });
+  });
   ui.tabs.addEventListener("click", (event) => {
     const button = event.target.closest("button");
     if (!button) return;
@@ -18867,7 +19051,7 @@ ${text2}</tr>
         }
         for (const dir of dirsToRefresh) send({ type: "listDir", rel: dir });
         if (S.current && paths.includes(S.current.rel)) {
-          if (S.dirty) {
+          if (S.dirty || S.settings.externalChange === "ask") {
             showBanner("\u78C1\u76D8\u4E0A\u7684\u7248\u672C\u5DF2\u66F4\u65B0", "\u91CD\u65B0\u8F7D\u5165", () => {
               if (S.current) send({ type: "open", rel: S.current.rel });
             });
@@ -18875,6 +19059,14 @@ ${text2}</tr>
             send({ type: "open", rel: S.current.rel });
           }
         }
+        break;
+      }
+      case "settings": {
+        S.settings = { ...S.settings, ...message.settings ?? {} };
+        if (Array.isArray(message.overridableKeys)) S.overridable = message.overridableKeys;
+        if (Array.isArray(message.overrides)) S.overrides = message.overrides;
+        applySettings();
+        if (message.reset) toast("\u5DF2\u6062\u590D\u9ED8\u8BA4\u8BBE\u7F6E");
         break;
       }
       case "toast":
@@ -18903,6 +19095,7 @@ ${text2}</tr>
     document.documentElement.dataset.theme = mode === "dark" || mode === "light" ? mode : window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
   }
   syncThemeMode();
+  applySettings();
   bridge.onMessage(handle);
   send({ type: "ready" });
   send({ type: "touched" });
