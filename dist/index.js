@@ -400,14 +400,17 @@ var SETTING_DEFAULTS = {
   codeFontSize: 0,
   wrapLongLines: false,
   showLineNumbers: false,
-  externalChange: "auto"
+  externalChange: "auto",
+  autoSave: false,
+  keepBackups: true
 };
 var OVERRIDABLE_KEYS = [
   "showHidden",
   "textOnly",
   "hideIgnoredFolders",
   "sortOrder",
-  "showModTime"
+  "showModTime",
+  "autoSave"
 ];
 var LISTING_KEYS = [
   "showHidden",
@@ -673,7 +676,7 @@ function activate(ctx) {
       size: stat.size,
       mtimeMs: stat.mtimeMs,
       changed,
-      hasUndo: fs3.existsSync(undoSlot(state, toRel(state.root, abs)))
+      hasUndo: settings().keepBackups && fs3.existsSync(undoSlot(state, toRel(state.root, abs)))
     };
     if (classification.kind === "text") {
       let content = "";
@@ -716,7 +719,11 @@ function activate(ctx) {
     const classification = classify(abs, stat.size, MAX_TEXT_BYTES);
     if (!classification.editable) return { type: "error", message: t("denied") };
     try {
-      fs3.writeFileSync(undoSlot(state, rel), fs3.readFileSync(abs));
+      if (settings().keepBackups) {
+        fs3.writeFileSync(undoSlot(state, rel), fs3.readFileSync(abs));
+      } else {
+        fs3.rmSync(undoSlot(state, rel), { force: true });
+      }
       fs3.writeFileSync(abs, content, "utf8");
     } catch {
       return { type: "error", message: t("failed") };
@@ -729,7 +736,7 @@ function activate(ctx) {
       reason: "save",
       mtimeMs: next.mtimeMs,
       size: next.size,
-      hasUndo: true,
+      hasUndo: settings().keepBackups,
       message: t("saved")
     };
   }

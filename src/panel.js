@@ -63,7 +63,18 @@ function createDemoBridge() {
     wrapLongLines: false,
     showLineNumbers: false,
     externalChange: 'auto',
+    autoSave: false,
+    keepBackups: true,
   };
+  const DEMO_OVERRIDABLE = [
+    'showHidden',
+    'textOnly',
+    'hideIgnoredFolders',
+    'sortOrder',
+    'showModTime',
+    'autoSave',
+    'keepBackups',
+  ];
   const overrides = [];
   const visibleEntries = (rel) => {
     const entries = (tree[rel] ?? []).filter((entry) => {
@@ -83,7 +94,7 @@ function createDemoBridge() {
   const settingsPayload = (reset) => ({
     type: 'settings',
     settings: demoState,
-    overridableKeys: ['showHidden', 'textOnly', 'hideIgnoredFolders', 'sortOrder', 'showModTime'],
+    overridableKeys: DEMO_OVERRIDABLE,
     overrides,
     ...(reset ? { reset: true } : {}),
   });
@@ -106,12 +117,22 @@ function createDemoBridge() {
         locale: 'zh-CN',
         sessionStartedAtMs: Date.now() - 3600_000,
         settings: demoState,
-        overridableKeys: ['showHidden', 'textOnly', 'hideIgnoredFolders', 'sortOrder', 'showModTime'],
+        overridableKeys: DEMO_OVERRIDABLE,
         overrides,
       });
       emit({ type: 'dir', rel: '', entries: visibleEntries(''), changed: ['README.md', 'docs/APK-EVIDENCE.md'], touched: [['docs/APK-EVIDENCE.md', 4]] });
     } else if (message.type === 'listDir') {
       emit({ type: 'dir', rel: message.rel, entries: visibleEntries(message.rel) });
+    } else if (message.type === 'save') {
+      emit({
+        type: 'saved',
+        rel: message.rel,
+        reason: 'save',
+        mtimeMs: Date.now(),
+        size: String(message.content ?? '').length,
+        hasUndo: demoState.keepBackups,
+        message: '已保存',
+      });
     } else if (message.type === 'setSetting') {
       demoState[message.key] = message.value;
       if (!overrides.includes(message.key)) overrides.push(message.key);
@@ -211,18 +232,30 @@ const S = {
     wrapLongLines: false,
     showLineNumbers: false,
     externalChange: 'auto',
+    autoSave: false,
+    keepBackups: true,
   },
   overridable: [],
   overrides: [],
+  autoSavePaused: false,
+  autoSaveTimer: null,
+  savedFlashTimer: null,
+  saveStatus: '',
 };
 
 const QUICK_SETTINGS = [
+  { group: '显示与排序' },
   { key: 'showHidden', label: '显示以「.」开头的文件' },
   { key: 'textOnly', label: '只显示文本类文件' },
   { key: 'showModTime', label: '显示修改时间' },
   { key: 'hideIgnoredFolders', label: '隐藏被忽略的目录' },
   { key: 'sortOrder', label: '最近修改在前', cycle: ['name', 'recent'] },
+  { group: '编辑' },
+  { key: 'autoSave', label: '自动保存' },
+  { key: 'keepBackups', label: '保留可回滚的副本' },
 ];
+
+const AUTO_SAVE_DELAY_MS = 900;
 
 const el = (id) => document.getElementById(id);
 const ui = {
@@ -257,6 +290,7 @@ const ui = {
   settingsPop: el('settings-pop'),
   settingsRows: el('settings-rows'),
   settingsReset: el('settings-reset'),
+  saveStatus: el('save-status'),
 };
 
 /* ── helpers ─────────────────────────────────────────────────────────────── */
@@ -589,9 +623,15 @@ function applyMode() {
 
 function openFile(rel) {
   if (S.dirty && S.current && S.current.rel !== rel) {
-    const leave = window.confirm('当前文件有未保存的修改，放弃并切换吗？');
-    if (!leave) return;
+    if (S.settings.autoSave) {
+      // Auto-save mode: flush instead of asking the user to choose.
+      flushAutoSave();
+    } else {
+      const leave = window.confirm('当前文件有未保存的修改，放弃并切换吗？');
+      if (!leave) return;
+    }
   }
+  clearTimeout(S.autoSaveTimer);
   S.dirty = false;
   ui.save.disabled = true;
   ui.undo.disabled = true;
@@ -627,6 +667,8 @@ function showFile(file) {
   }
   ui.external.disabled = false;
   ui.undo.disabled = !file.hasUndo;
+  S.autoSavePaused = false;
+  if (S.settings.autoSave) setSaveStatus('');
   renderCrumb();
   renderTree();
 }
@@ -651,9 +693,11 @@ function hideBanner() {
 
 /* ── saving ──────────────────────────────────────────────────────────────── */
 
-function save() {
+function save({ silent = false } = {}) {
   const file = S.current;
   if (!file || !file.editable) return;
+  clearTimeout(S.autoSaveTimer);
+  if (silent && S.settings.autoSave) setSaveStatus('saving');
   const content = ui.editor.value;
   send({ type: 'save', rel: file.rel, content, baseMtimeMs: file.mtimeMs });
 }
@@ -663,6 +707,8 @@ ui.editor.addEventListener('input', () => {
   if (!file) return;
   S.dirty = ui.editor.value !== file.content;
   ui.save.disabled = !S.dirty;
+  if (S.settings.autoSave && !S.autoSavePaused) setSaveStatus('dirty');
+  scheduleAutoSave();
   renderGutter();
   renderCrumb();
 });
@@ -684,7 +730,7 @@ document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape') hideCtxMenu();
 });
 
-ui.save.addEventListener('click', save);
+ui.save.addEventListener('click', () => save());
 
 ui.undo.addEventListener('click', () => {
   if (!S.current) return;
@@ -802,14 +848,58 @@ function isOverridden(key) {
 }
 
 function applySettings() {
-  const { codeFontSize, wrapLongLines, showLineNumbers } = S.settings;
+  const { codeFontSize, wrapLongLines, showLineNumbers, autoSave } = S.settings;
   ui.editor.style.fontSize = codeFontSize > 0 ? `${codeFontSize}px` : '';
   ui.gutter.style.fontSize = codeFontSize > 0 ? `${codeFontSize}px` : '';
   ui.editor.classList.toggle('wrap', Boolean(wrapLongLines));
   ui.gutter.hidden = !showLineNumbers;
   if (showLineNumbers) renderGutter();
+
+  // Auto-save mode: the Save button is redundant, so it turns into a status dot.
+  ui.save.hidden = Boolean(autoSave);
+  ui.saveStatus.hidden = !autoSave;
+  if (autoSave) {
+    setSaveStatus(S.dirty ? 'dirty' : '');
+  } else {
+    clearTimeout(S.savedFlashTimer);
+    ui.saveStatus.classList.remove('dirty', 'saving', 'saved', 'failed');
+  }
+
   renderSettingsRows();
   renderFoot();
+}
+
+function setSaveStatus(kind, text) {
+  clearTimeout(S.savedFlashTimer);
+  ui.saveStatus.classList.remove('dirty', 'saving', 'saved', 'failed');
+  if (kind) ui.saveStatus.classList.add(kind);
+  const labels = { dirty: '未保存', saving: '保存中…', saved: '已保存', failed: '保存失败' };
+  ui.saveStatus.textContent = text ?? labels[kind] ?? '';
+  // Idle with nothing to say: hide the chip rather than showing a bare dot.
+  ui.saveStatus.hidden = !S.settings.autoSave || !kind;
+  if (kind === 'saved') {
+    S.savedFlashTimer = setTimeout(() => {
+      ui.saveStatus.classList.remove('saved');
+      ui.saveStatus.textContent = '';
+      ui.saveStatus.hidden = true;
+    }, 2200);
+  }
+}
+
+function scheduleAutoSave() {
+  if (!S.settings.autoSave || S.autoSavePaused) return;
+  clearTimeout(S.autoSaveTimer);
+  S.autoSaveTimer = setTimeout(() => {
+    if (!S.current || !S.current.editable || !S.dirty) return;
+    save({ silent: true });
+  }, AUTO_SAVE_DELAY_MS);
+}
+
+/** Auto-save flushes before anything that would otherwise prompt about unsaved edits. */
+function flushAutoSave() {
+  clearTimeout(S.autoSaveTimer);
+  if (!S.settings.autoSave || S.autoSavePaused) return;
+  if (S.current && S.current.editable && S.dirty) save({ silent: true });
 }
 
 function renderGutter() {
@@ -827,6 +917,13 @@ function renderGutter() {
 function renderSettingsRows() {
   ui.settingsRows.innerHTML = '';
   for (const item of QUICK_SETTINGS) {
+    if (item.group) {
+      const header = document.createElement('div');
+      header.className = 'popover-group';
+      header.textContent = item.group;
+      ui.settingsRows.appendChild(header);
+      continue;
+    }
     const on = item.cycle ? settingValue(item.key) === item.cycle[1] : Boolean(settingValue(item.key));
     const row = document.createElement('div');
     row.className = `prow${on ? ' on' : ''}`;
@@ -1077,6 +1174,7 @@ function handle(message) {
         ui.undo.disabled = !S.current.hasUndo;
         S.dirty = false;
         ui.save.disabled = true;
+        if (S.settings.autoSave) setSaveStatus('saved');
         if (message.reason === 'undo') {
           // The disk now holds the older content — reload it instead of trusting the editor buffer.
           send({ type: 'open', rel: message.rel });
@@ -1087,14 +1185,17 @@ function handle(message) {
       }
       S.changed.add(message.rel);
       hideBanner();
-      toast(message.message ?? '已保存');
+      if (!S.settings.autoSave) toast(message.message ?? '已保存');
       send({ type: 'listDir', rel: '' });
       break;
     }
     case 'saveConflict': {
       S.diskConflict = message;
+      S.autoSavePaused = true;
+      if (S.settings.autoSave) setSaveStatus('failed', '磁盘上有更新');
       showBanner('这个文件在磁盘上已被修改', '以我的版本覆盖', () => {
         if (!S.current) return;
+        S.autoSavePaused = false;
         S.current.mtimeMs = message.mtimeMs;
         save();
       });

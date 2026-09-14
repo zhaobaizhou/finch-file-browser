@@ -450,6 +450,40 @@ html[data-theme="dark"] .hljs-punctuation { color: #56b6c2; }
 
 .btn.icon { padding: 3px 9px 5px; font-size: 15px; line-height: 1; letter-spacing: 1px; }
 
+.save-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 2px;
+  color: var(--fb-text-3);
+  font-size: calc(var(--fb-fs) - 2px);
+  white-space: nowrap;
+}
+.save-status[hidden] { display: none; }
+.save-status::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.45;
+}
+.save-status.dirty { color: var(--fb-warning); }
+.save-status.dirty::before { opacity: 1; }
+.save-status.saving { color: var(--fb-text-2); }
+.save-status.saved { color: var(--fb-positive); }
+.save-status.saved::before { opacity: 1; }
+.save-status.failed { color: var(--fb-danger); }
+.save-status.failed::before { opacity: 1; }
+
+.popover .popover-group {
+  padding: 7px 8px 3px;
+  color: var(--fb-text-3);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
 .popover {
   position: absolute;
   z-index: 55;

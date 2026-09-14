@@ -163,6 +163,20 @@
             { "value": "ask", "label": "Always ask first" }
           ],
           "default": "auto"
+        },
+        {
+          "key": "autoSave",
+          "type": "boolean",
+          "label": "Save automatically while typing",
+          "description": "Hides the Save button and writes changes to disk shortly after you stop typing. The disk-conflict check still applies.",
+          "default": false
+        },
+        {
+          "key": "keepBackups",
+          "type": "boolean",
+          "label": "Keep a rollback copy before each save",
+          "description": "Stores the previous version in the mini tool's private storage so \"Roll back last save\" works. Turn off to stop using that space.",
+          "default": true
         }
       ]
     },

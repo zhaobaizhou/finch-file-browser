@@ -18109,8 +18109,19 @@ ${text2}</tr>
       codeFontSize: 0,
       wrapLongLines: false,
       showLineNumbers: false,
-      externalChange: "auto"
+      externalChange: "auto",
+      autoSave: false,
+      keepBackups: true
     };
+    const DEMO_OVERRIDABLE = [
+      "showHidden",
+      "textOnly",
+      "hideIgnoredFolders",
+      "sortOrder",
+      "showModTime",
+      "autoSave",
+      "keepBackups"
+    ];
     const overrides = [];
     const visibleEntries = (rel) => {
       const entries2 = (tree[rel] ?? []).filter((entry) => {
@@ -18130,7 +18141,7 @@ ${text2}</tr>
     const settingsPayload = (reset) => ({
       type: "settings",
       settings: demoState,
-      overridableKeys: ["showHidden", "textOnly", "hideIgnoredFolders", "sortOrder", "showModTime"],
+      overridableKeys: DEMO_OVERRIDABLE,
       overrides,
       ...reset ? { reset: true } : {}
     });
@@ -18150,12 +18161,22 @@ ${text2}</tr>
           locale: "zh-CN",
           sessionStartedAtMs: Date.now() - 36e5,
           settings: demoState,
-          overridableKeys: ["showHidden", "textOnly", "hideIgnoredFolders", "sortOrder", "showModTime"],
+          overridableKeys: DEMO_OVERRIDABLE,
           overrides
         });
         emit({ type: "dir", rel: "", entries: visibleEntries(""), changed: ["README.md", "docs/APK-EVIDENCE.md"], touched: [["docs/APK-EVIDENCE.md", 4]] });
       } else if (message.type === "listDir") {
         emit({ type: "dir", rel: message.rel, entries: visibleEntries(message.rel) });
+      } else if (message.type === "save") {
+        emit({
+          type: "saved",
+          rel: message.rel,
+          reason: "save",
+          mtimeMs: Date.now(),
+          size: String(message.content ?? "").length,
+          hasUndo: demoState.keepBackups,
+          message: "\u5DF2\u4FDD\u5B58"
+        });
       } else if (message.type === "setSetting") {
         demoState[message.key] = message.value;
         if (!overrides.includes(message.key)) overrides.push(message.key);
@@ -18253,18 +18274,29 @@ ${text2}</tr>
       codeFontSize: 0,
       wrapLongLines: false,
       showLineNumbers: false,
-      externalChange: "auto"
+      externalChange: "auto",
+      autoSave: false,
+      keepBackups: true
     },
     overridable: [],
-    overrides: []
+    overrides: [],
+    autoSavePaused: false,
+    autoSaveTimer: null,
+    savedFlashTimer: null,
+    saveStatus: ""
   };
   var QUICK_SETTINGS = [
+    { group: "\u663E\u793A\u4E0E\u6392\u5E8F" },
     { key: "showHidden", label: "\u663E\u793A\u4EE5\u300C.\u300D\u5F00\u5934\u7684\u6587\u4EF6" },
     { key: "textOnly", label: "\u53EA\u663E\u793A\u6587\u672C\u7C7B\u6587\u4EF6" },
     { key: "showModTime", label: "\u663E\u793A\u4FEE\u6539\u65F6\u95F4" },
     { key: "hideIgnoredFolders", label: "\u9690\u85CF\u88AB\u5FFD\u7565\u7684\u76EE\u5F55" },
-    { key: "sortOrder", label: "\u6700\u8FD1\u4FEE\u6539\u5728\u524D", cycle: ["name", "recent"] }
+    { key: "sortOrder", label: "\u6700\u8FD1\u4FEE\u6539\u5728\u524D", cycle: ["name", "recent"] },
+    { group: "\u7F16\u8F91" },
+    { key: "autoSave", label: "\u81EA\u52A8\u4FDD\u5B58" },
+    { key: "keepBackups", label: "\u4FDD\u7559\u53EF\u56DE\u6EDA\u7684\u526F\u672C" }
   ];
+  var AUTO_SAVE_DELAY_MS = 900;
   var el = (id) => document.getElementById(id);
   var ui = {
     crumb: el("crumb"),
@@ -18297,7 +18329,8 @@ ${text2}</tr>
     settingsBtn: el("btn-settings"),
     settingsPop: el("settings-pop"),
     settingsRows: el("settings-rows"),
-    settingsReset: el("settings-reset")
+    settingsReset: el("settings-reset"),
+    saveStatus: el("save-status")
   };
   function send(message) {
     bridge.postMessage(message);
@@ -18584,9 +18617,14 @@ ${text2}</tr>
   }
   function openFile(rel) {
     if (S.dirty && S.current && S.current.rel !== rel) {
-      const leave = window.confirm("\u5F53\u524D\u6587\u4EF6\u6709\u672A\u4FDD\u5B58\u7684\u4FEE\u6539\uFF0C\u653E\u5F03\u5E76\u5207\u6362\u5417\uFF1F");
-      if (!leave) return;
+      if (S.settings.autoSave) {
+        flushAutoSave();
+      } else {
+        const leave = window.confirm("\u5F53\u524D\u6587\u4EF6\u6709\u672A\u4FDD\u5B58\u7684\u4FEE\u6539\uFF0C\u653E\u5F03\u5E76\u5207\u6362\u5417\uFF1F");
+        if (!leave) return;
+      }
     }
+    clearTimeout(S.autoSaveTimer);
     S.dirty = false;
     ui.save.disabled = true;
     ui.undo.disabled = true;
@@ -18620,6 +18658,8 @@ ${text2}</tr>
     }
     ui.external.disabled = false;
     ui.undo.disabled = !file.hasUndo;
+    S.autoSavePaused = false;
+    if (S.settings.autoSave) setSaveStatus("");
     renderCrumb();
     renderTree();
   }
@@ -18637,9 +18677,11 @@ ${text2}</tr>
   function hideBanner() {
     ui.banner.hidden = true;
   }
-  function save() {
+  function save({ silent = false } = {}) {
     const file = S.current;
     if (!file || !file.editable) return;
+    clearTimeout(S.autoSaveTimer);
+    if (silent && S.settings.autoSave) setSaveStatus("saving");
     const content = ui.editor.value;
     send({ type: "save", rel: file.rel, content, baseMtimeMs: file.mtimeMs });
   }
@@ -18648,6 +18690,8 @@ ${text2}</tr>
     if (!file) return;
     S.dirty = ui.editor.value !== file.content;
     ui.save.disabled = !S.dirty;
+    if (S.settings.autoSave && !S.autoSavePaused) setSaveStatus("dirty");
+    scheduleAutoSave();
     renderGutter();
     renderCrumb();
   });
@@ -18666,7 +18710,7 @@ ${text2}</tr>
     }
     if (event.key === "Escape") hideCtxMenu();
   });
-  ui.save.addEventListener("click", save);
+  ui.save.addEventListener("click", () => save());
   ui.undo.addEventListener("click", () => {
     if (!S.current) return;
     send({ type: "undo", rel: S.current.rel });
@@ -18767,14 +18811,50 @@ ${text2}</tr>
     return S.overrides.includes(key);
   }
   function applySettings() {
-    const { codeFontSize, wrapLongLines, showLineNumbers } = S.settings;
+    const { codeFontSize, wrapLongLines, showLineNumbers, autoSave } = S.settings;
     ui.editor.style.fontSize = codeFontSize > 0 ? `${codeFontSize}px` : "";
     ui.gutter.style.fontSize = codeFontSize > 0 ? `${codeFontSize}px` : "";
     ui.editor.classList.toggle("wrap", Boolean(wrapLongLines));
     ui.gutter.hidden = !showLineNumbers;
     if (showLineNumbers) renderGutter();
+    ui.save.hidden = Boolean(autoSave);
+    ui.saveStatus.hidden = !autoSave;
+    if (autoSave) {
+      setSaveStatus(S.dirty ? "dirty" : "");
+    } else {
+      clearTimeout(S.savedFlashTimer);
+      ui.saveStatus.classList.remove("dirty", "saving", "saved", "failed");
+    }
     renderSettingsRows();
     renderFoot();
+  }
+  function setSaveStatus(kind, text2) {
+    clearTimeout(S.savedFlashTimer);
+    ui.saveStatus.classList.remove("dirty", "saving", "saved", "failed");
+    if (kind) ui.saveStatus.classList.add(kind);
+    const labels = { dirty: "\u672A\u4FDD\u5B58", saving: "\u4FDD\u5B58\u4E2D\u2026", saved: "\u5DF2\u4FDD\u5B58", failed: "\u4FDD\u5B58\u5931\u8D25" };
+    ui.saveStatus.textContent = text2 ?? labels[kind] ?? "";
+    ui.saveStatus.hidden = !S.settings.autoSave || !kind;
+    if (kind === "saved") {
+      S.savedFlashTimer = setTimeout(() => {
+        ui.saveStatus.classList.remove("saved");
+        ui.saveStatus.textContent = "";
+        ui.saveStatus.hidden = true;
+      }, 2200);
+    }
+  }
+  function scheduleAutoSave() {
+    if (!S.settings.autoSave || S.autoSavePaused) return;
+    clearTimeout(S.autoSaveTimer);
+    S.autoSaveTimer = setTimeout(() => {
+      if (!S.current || !S.current.editable || !S.dirty) return;
+      save({ silent: true });
+    }, AUTO_SAVE_DELAY_MS);
+  }
+  function flushAutoSave() {
+    clearTimeout(S.autoSaveTimer);
+    if (!S.settings.autoSave || S.autoSavePaused) return;
+    if (S.current && S.current.editable && S.dirty) save({ silent: true });
   }
   function renderGutter() {
     if (ui.gutter.hidden) return;
@@ -18791,6 +18871,13 @@ ${text2}</tr>
   function renderSettingsRows() {
     ui.settingsRows.innerHTML = "";
     for (const item of QUICK_SETTINGS) {
+      if (item.group) {
+        const header = document.createElement("div");
+        header.className = "popover-group";
+        header.textContent = item.group;
+        ui.settingsRows.appendChild(header);
+        continue;
+      }
       const on = item.cycle ? settingValue(item.key) === item.cycle[1] : Boolean(settingValue(item.key));
       const row = document.createElement("div");
       row.className = `prow${on ? " on" : ""}`;
@@ -19012,6 +19099,7 @@ ${text2}</tr>
           ui.undo.disabled = !S.current.hasUndo;
           S.dirty = false;
           ui.save.disabled = true;
+          if (S.settings.autoSave) setSaveStatus("saved");
           if (message.reason === "undo") {
             send({ type: "open", rel: message.rel });
           } else {
@@ -19021,14 +19109,17 @@ ${text2}</tr>
         }
         S.changed.add(message.rel);
         hideBanner();
-        toast(message.message ?? "\u5DF2\u4FDD\u5B58");
+        if (!S.settings.autoSave) toast(message.message ?? "\u5DF2\u4FDD\u5B58");
         send({ type: "listDir", rel: "" });
         break;
       }
       case "saveConflict": {
         S.diskConflict = message;
+        S.autoSavePaused = true;
+        if (S.settings.autoSave) setSaveStatus("failed", "\u78C1\u76D8\u4E0A\u6709\u66F4\u65B0");
         showBanner("\u8FD9\u4E2A\u6587\u4EF6\u5728\u78C1\u76D8\u4E0A\u5DF2\u88AB\u4FEE\u6539", "\u4EE5\u6211\u7684\u7248\u672C\u8986\u76D6", () => {
           if (!S.current) return;
+          S.autoSavePaused = false;
           S.current.mtimeMs = message.mtimeMs;
           save();
         });

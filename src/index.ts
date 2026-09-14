@@ -34,6 +34,8 @@ export interface ResolvedSettings {
   wrapLongLines: boolean;
   showLineNumbers: boolean;
   externalChange: 'auto' | 'ask';
+  autoSave: boolean;
+  keepBackups: boolean;
 }
 
 /**
@@ -55,6 +57,8 @@ const SETTING_DEFAULTS: ResolvedSettings = {
   wrapLongLines: false,
   showLineNumbers: false,
   externalChange: 'auto',
+  autoSave: false,
+  keepBackups: true,
 };
 
 type SettingsKey = keyof typeof SETTING_DEFAULTS;
@@ -66,6 +70,7 @@ const OVERRIDABLE_KEYS: SettingsKey[] = [
   'hideIgnoredFolders',
   'sortOrder',
   'showModTime',
+  'autoSave',
 ];
 
 /** Changing these invalidates the directory listings and the scan cache. */
@@ -414,7 +419,7 @@ export function activate(ctx: finch.MiniToolContext): void {
       size: stat.size,
       mtimeMs: stat.mtimeMs,
       changed,
-      hasUndo: fs.existsSync(undoSlot(state, toRel(state.root, abs))),
+      hasUndo: settings().keepBackups && fs.existsSync(undoSlot(state, toRel(state.root, abs))),
     };
 
     if (classification.kind === 'text') {
@@ -460,7 +465,11 @@ export function activate(ctx: finch.MiniToolContext): void {
     if (!classification.editable) return { type: 'error', message: t('denied') };
 
     try {
-      fs.writeFileSync(undoSlot(state, rel), fs.readFileSync(abs));
+      if (settings().keepBackups) {
+        fs.writeFileSync(undoSlot(state, rel), fs.readFileSync(abs));
+      } else {
+        fs.rmSync(undoSlot(state, rel), { force: true });
+      }
       fs.writeFileSync(abs, content, 'utf8');
     } catch {
       return { type: 'error', message: t('failed') };
@@ -473,7 +482,7 @@ export function activate(ctx: finch.MiniToolContext): void {
       reason: 'save',
       mtimeMs: next.mtimeMs,
       size: next.size,
-      hasUndo: true,
+      hasUndo: settings().keepBackups,
       message: t('saved'),
     };
   }
