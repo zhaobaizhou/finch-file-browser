@@ -1,0 +1,9 @@
+{
+  "name": "对话文件",
+  "description": "在这个对话绑定的文件夹里浏览、预览和修改文件，不用离开会话。",
+  "composerActions": {
+    "open-file-browser": {
+      "tooltip": "打开会话文件"
+    }
+  }
+}

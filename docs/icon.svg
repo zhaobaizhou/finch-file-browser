@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="256" height="256" viewBox="0 0 256 256" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stop-color="#5B7CFA" />
+          <stop offset="55%" stop-color="#6E5BF0" />
+          <stop offset="100%" stop-color="#8B4DE8" />
+        </linearGradient>
+        <linearGradient id="gloss" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="#ffffff" stop-opacity="0.22" />
+          <stop offset="60%" stop-color="#ffffff" stop-opacity="0" />
+        </linearGradient>
+      </defs>
+
+      <rect width="256" height="256" rx="58" fill="url(#bg)" />
+      <rect width="256" height="256" rx="58" fill="url(#gloss)" />
+
+      <!-- folder -->
+      <path
+        d="M44 84a16 16 0 0 1 16-16h34.6a16 16 0 0 1 11.3 4.7L118 85h78a16 16 0 0 1 16 16v75a16 16 0 0 1-16 16H60a16 16 0 0 1-16-16V84Z"
+        fill="#ffffff" fill-opacity="0.16"
+        stroke="#ffffff" stroke-width="9" stroke-linejoin="round"
+      />
+
+      <!-- document -->
+      <path
+        d="M92 106h44l24 24v52a10 10 0 0 1-10 10H92a10 10 0 0 1-10-10v-66a10 10 0 0 1 10-10Z"
+        fill="#ffffff"
+      />
+      <path d="M136 106v18a6 6 0 0 0 6 6h18" fill="none" stroke="#6E5BF0" stroke-width="7" stroke-linejoin="round" />
+
+      <!-- file lines -->
+      <g stroke="#6E5BF0" stroke-width="7" stroke-linecap="round">
+        <line x1="100" y1="140" x2="136" y2="140" />
+        <line x1="100" y1="158" x2="150" y2="158" />
+        <line x1="100" y1="176" x2="124" y2="176" />
+      </g>
+
+      <!-- accent dot: this session touched this file -->
+      <circle cx="167" cy="177" r="15" fill="#FFC24B" stroke="#ffffff" stroke-width="7" />
+    </svg>

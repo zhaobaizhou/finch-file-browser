@@ -1,0 +1,20 @@
+# dependencies
+node_modules/
+
+# build leftovers
+*.tsbuildinfo
+
+# macOS
+.DS_Store
+
+# logs
+*.log
+npm-debug.log*
+
+# editor / tooling
+.idea/
+.vscode/
+.finch/
+
+# local scratch
+tmp/

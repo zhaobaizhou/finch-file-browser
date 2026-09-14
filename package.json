@@ -1,0 +1,99 @@
+{
+  "name": "finch-file-browser",
+  "version": "0.1.0",
+  "description": "Browse, preview and edit the files in the current Finch conversation's folder, right inside the session panel.",
+  "author": {
+    "name": "zhaobaizhou",
+    "url": "https://github.com/zhaobaizhou"
+  },
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/index.js",
+  "keywords": [
+    "finch",
+    "finch-minitool",
+    "files",
+    "browser",
+    "markdown",
+    "editor",
+    "panel"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zhaobaizhou/finch-file-browser.git"
+  },
+  "homepage": "https://github.com/zhaobaizhou/finch-file-browser#readme",
+  "bugs": {
+    "url": "https://github.com/zhaobaizhou/finch-file-browser/issues"
+  },
+  "scripts": {
+    "build": "npm run build:host && npm run build:page && npm run copy:assets",
+    "build:host": "esbuild src/index.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/index.js",
+    "build:page": "esbuild src/panel.js --bundle --format=iife --target=chrome120 --outfile=dist/panel.js",
+    "copy:assets": "node scripts/copy-assets.mjs",
+    "typecheck": "tsc --noEmit",
+    "doctor": "npx @finchtoys/minitools doctor .",
+    "icon": "rsvg-convert -w 256 -h 256 -o icon.png docs/icon.svg",
+    "prepublishOnly": "npm run typecheck && npm run build && npx @finchtoys/minitools doctor ."
+  },
+  "devDependencies": {
+    "@finchtoys/minitool-api": "^0.3.2",
+    "@types/node": "^26.1.0",
+    "esbuild": "^0.28.1",
+    "typescript": "^6.0.3"
+  },
+  "dependencies": {
+    "dompurify": "^3.2.4",
+    "highlight.js": "^11.11.1",
+    "marked": "^15.0.6"
+  },
+  "files": [
+    "dist/",
+    "i18n/",
+    "icon.png",
+    "README.md"
+  ],
+  "finch": {
+    "manifestVersion": 1,
+    "name": "Session Files",
+    "description": "Browse, preview and edit the files in this conversation's folder, without leaving the session.",
+    "main": "dist/index.js",
+    "activationEvents": [
+      "onStartup"
+    ],
+    "miniToolType": "local",
+    "categories": [
+      "productivity",
+      "developer"
+    ],
+    "contributes": {
+      "iconPacks": [
+        {
+          "id": "file-browser-icons",
+          "label": "File Browser Icons"
+        }
+      ],
+      "appPanel": {
+        "icon": "file-text",
+        "viewType": "sessionFiles.browser",
+        "instanceMode": "single",
+        "showInLauncher": true,
+        "source": {
+          "type": "local",
+          "path": "dist/panel.html"
+        }
+      },
+      "composerActions": [
+        {
+          "id": "open-file-browser",
+          "icon": "file-text",
+          "tooltip": "Open session files"
+        }
+      ]
+    },
+    "permissions": {
+      "filesystem": "readwrite",
+      "network": false
+    }
+  }
+}
