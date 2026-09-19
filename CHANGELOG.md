@@ -8,7 +8,18 @@ Releases are batched by user-visible milestone rather than published per commit 
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+
+- **File management from the tree**: create files and folders, rename, and move to the system
+  Trash — from the right-click menu on the folder root, any folder, or any file. Name entry uses
+  Finch's own modal dialog; deletion goes to the Trash (never `unlink`), and the folder root
+  cannot be renamed or removed. The viewer follows a rename and clears when the open file is
+  trashed.
+
+### Planned
+
+- Keyboard navigation (`⌘P` to the filter, `↑↓`/`Enter`/`Esc` in the tree).
+- Image preview: zoom, pan, fit-to-window.
 
 ## [0.3.0] — 2026-09-19
 
