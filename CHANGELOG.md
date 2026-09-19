@@ -8,6 +8,12 @@ Releases are batched by user-visible milestone rather than published per commit 
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.4.0] — 2026-09-19
+
+The tree became something you can manage and drive from the keyboard.
+
 ### Added
 
 - **File management from the tree**: create files and folders, rename, and move to the system
