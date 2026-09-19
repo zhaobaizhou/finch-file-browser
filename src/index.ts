@@ -34,7 +34,6 @@ export interface ResolvedSettings {
   wrapLongLines: boolean;
   showLineNumbers: boolean;
   externalChange: 'auto' | 'ask';
-  autoSave: boolean;
   keepBackups: boolean;
 }
 
@@ -57,7 +56,6 @@ const SETTING_DEFAULTS: ResolvedSettings = {
   wrapLongLines: false,
   showLineNumbers: false,
   externalChange: 'auto',
-  autoSave: false,
   keepBackups: true,
 };
 
@@ -70,7 +68,6 @@ const OVERRIDABLE_KEYS: SettingsKey[] = [
   'hideIgnoredFolders',
   'sortOrder',
   'showModTime',
-  'autoSave',
 ];
 
 /** Changing these invalidates the directory listings and the scan cache. */
@@ -95,8 +92,9 @@ const TEXT = {
     tooLarge: '文件太大，已交给系统程序打开',
     conflict: '文件已被其他程序修改',
     saved: '已保存',
-    restored: '已撤销上一次保存',
-    noUndo: '没有可撤销的保存记录',
+    reverted: '已恢复到打开时',
+    restored: '已恢复你的编辑',
+    noBaseline: '这个文件没有可恢复的备份',
     failed: '操作失败',
     externalOpened: '已用系统程序打开',
   },
@@ -107,8 +105,9 @@ const TEXT = {
     tooLarge: 'File is too large — opened with the system app instead',
     conflict: 'The file changed on disk',
     saved: 'Saved',
-    restored: 'Reverted the last save',
-    noUndo: 'Nothing to undo',
+    reverted: 'Reverted to how it was when you opened it',
+    restored: 'Your edits are back',
+    noBaseline: 'No snapshot for this file',
     failed: 'Something went wrong',
     externalOpened: 'Opened with the system app',
   },
@@ -393,9 +392,36 @@ export function activate(ctx: finch.MiniToolContext): void {
     return `finch-file://local?path=${encodeURIComponent(abs)}`;
   }
 
-  function undoSlot(state: SessionState, rel: string): string {
+  function lineCount(text: string): number {
+    return text.split('\n').length;
+  }
+
+  /**
+   * The revert baseline is the file's content the first time this session opened
+   * it — not "the previous save". Under auto-save a previous-save snapshot is
+   * only a second old and therefore worthless; a baseline lets someone undo one
+   * whole editing session, and it can be exchanged back for a real two-way undo.
+   */
+  function baselineSlot(state: SessionState, rel: string): string {
     const safe = Buffer.from(`${state.sessionId}::${rel}`).toString('base64url').slice(0, 120);
-    return path.join(undoDir, `${safe}.txt`);
+    return path.join(undoDir, `${safe}.baseline.txt`);
+  }
+
+  function baselineInfo(state: SessionState, rel: string, current: string) {
+    if (!settings().keepBackups) return { exists: false, lineCount: 0, atBaseline: false };
+    const slot = baselineSlot(state, rel);
+    if (!fs.existsSync(slot)) return { exists: false, lineCount: 0, atBaseline: false };
+    let stored = '';
+    try {
+      stored = fs.readFileSync(slot, 'utf8');
+    } catch {
+      return { exists: false, lineCount: 0, atBaseline: false };
+    }
+    return {
+      exists: true,
+      lineCount: lineCount(stored),
+      atBaseline: stored === current,
+    };
   }
 
   function openFile(state: SessionState, rel: string) {
@@ -419,7 +445,6 @@ export function activate(ctx: finch.MiniToolContext): void {
       size: stat.size,
       mtimeMs: stat.mtimeMs,
       changed,
-      hasUndo: settings().keepBackups && fs.existsSync(undoSlot(state, toRel(state.root, abs))),
     };
 
     if (classification.kind === 'text') {
@@ -429,13 +454,24 @@ export function activate(ctx: finch.MiniToolContext): void {
       } catch {
         return { type: 'error', message: t('failed') };
       }
+      if (classification.editable && settings().keepBackups) {
+        const slot = baselineSlot(state, toRel(state.root, abs));
+        if (!fs.existsSync(slot)) {
+          try {
+            fs.writeFileSync(slot, content);
+          } catch {
+            /* baseline is best effort */
+          }
+        }
+      }
       return {
         ...base,
         kind: 'text',
         flavor: classification.flavor,
         editable: classification.editable,
         content,
-        lineCount: content.split('\n').length,
+        lineCount: lineCount(content),
+        baseline: baselineInfo(state, toRel(state.root, abs), content),
       };
     }
     if (classification.kind === 'image') {
@@ -465,11 +501,6 @@ export function activate(ctx: finch.MiniToolContext): void {
     if (!classification.editable) return { type: 'error', message: t('denied') };
 
     try {
-      if (settings().keepBackups) {
-        fs.writeFileSync(undoSlot(state, rel), fs.readFileSync(abs));
-      } else {
-        fs.rmSync(undoSlot(state, rel), { force: true });
-      }
       fs.writeFileSync(abs, content, 'utf8');
     } catch {
       return { type: 'error', message: t('failed') };
@@ -482,33 +513,39 @@ export function activate(ctx: finch.MiniToolContext): void {
       reason: 'save',
       mtimeMs: next.mtimeMs,
       size: next.size,
-      hasUndo: settings().keepBackups,
+      baseline: baselineInfo(state, rel, content),
       message: t('saved'),
     };
   }
 
-  /** Roll the file back to the snapshot taken right before the last save. */
-  function undoFile(state: SessionState, rel: string) {
-    const slot = undoSlot(state, rel);
+  /**
+   * Two-way revert: swap the file with its baseline snapshot. Pressing it again
+   * puts your edits back, so this is never a one-way trip into an unknown state.
+   */
+  function revertFile(state: SessionState, rel: string) {
     const abs = resolveInside(state.root, rel);
     if (!abs) return { type: 'error', message: t('denied') };
-    if (!fs.existsSync(slot)) return { type: 'error', message: t('noUndo') };
+    const slot = baselineSlot(state, rel);
+    if (!fs.existsSync(slot)) return { type: 'error', message: t('noBaseline') };
     try {
-      fs.writeFileSync(abs, fs.readFileSync(slot));
-      fs.rmSync(slot, { force: true });
+      const stored = fs.readFileSync(slot, 'utf8');
+      const current = fs.readFileSync(abs, 'utf8');
+      fs.writeFileSync(abs, stored, 'utf8');
+      fs.writeFileSync(slot, current, 'utf8');
     } catch {
       return { type: 'error', message: t('failed') };
     }
     state.scan = null;
     const next = fs.statSync(abs);
+    const nowAtBaseline = baselineInfo(state, rel, fs.readFileSync(abs, 'utf8'));
     return {
       type: 'saved',
       rel,
-      reason: 'undo',
+      reason: 'revert',
       mtimeMs: next.mtimeMs,
       size: next.size,
-      hasUndo: false,
-      message: t('restored'),
+      baseline: nowAtBaseline,
+      message: nowAtBaseline.atBaseline ? t('reverted') : t('restored'),
     };
   }
 
@@ -619,8 +656,8 @@ export function activate(ctx: finch.MiniToolContext): void {
           saveFile(state, String(message.rel ?? ''), String(message.content ?? ''), Number(message.baseMtimeMs ?? 0)),
         );
         return;
-      case 'undo':
-        await panel.postMessage(undoFile(state, String(message.rel ?? '')));
+      case 'revert':
+        await panel.postMessage(revertFile(state, String(message.rel ?? '')));
         return;
       case 'openExternal':
         await panel.postMessage(openExternally(state, String(message.rel ?? ''), false));

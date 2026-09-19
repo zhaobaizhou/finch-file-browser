@@ -86,25 +86,6 @@ html, body {
 
 .topbar-actions { display: flex; align-items: center; gap: 6px; flex: none; }
 
-.seg {
-  display: inline-flex;
-  border: 1px solid var(--fb-border);
-  border-radius: var(--fb-radius);
-  overflow: hidden;
-}
-.seg button {
-  appearance: none;
-  border: 0;
-  background: transparent;
-  color: var(--fb-text-2);
-  font: inherit;
-  font-size: calc(var(--fb-fs) - 1px);
-  padding: 3px 9px;
-  cursor: pointer;
-}
-.seg button + button { border-left: 1px solid var(--fb-border); }
-.seg button.on { background: var(--fb-bg-active); color: var(--fb-text-1); font-weight: 600; }
-
 .btn {
   appearance: none;
   border: 1px solid var(--fb-border);
@@ -119,8 +100,6 @@ html, body {
 }
 .btn:hover:not(:disabled) { background: var(--fb-bg-hover); }
 .btn:disabled { opacity: 0.42; cursor: default; }
-.btn.primary { background: var(--fb-accent); border-color: transparent; color: #fff; font-weight: 600; }
-.btn.primary:disabled { background: var(--fb-accent); }
 
 /* ── body ────────────────────────────────────────────────────────────────── */
 
@@ -537,6 +516,15 @@ html[data-theme="dark"] .hljs-punctuation { color: #56b6c2; }
   user-select: none;
 }
 .prow:hover { background: var(--fb-bg-hover); }
+.prow.disabled { opacity: 0.5; cursor: default; }
+.prow.disabled:hover { background: transparent; }
+.prow .box.action {
+  border: 0;
+  background: transparent;
+  color: var(--fb-text-3);
+  font-size: 12px;
+  line-height: 1;
+}
 .prow .box {
   width: 14px;
   height: 14px;

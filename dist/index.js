@@ -401,7 +401,6 @@ var SETTING_DEFAULTS = {
   wrapLongLines: false,
   showLineNumbers: false,
   externalChange: "auto",
-  autoSave: false,
   keepBackups: true
 };
 var OVERRIDABLE_KEYS = [
@@ -409,8 +408,7 @@ var OVERRIDABLE_KEYS = [
   "textOnly",
   "hideIgnoredFolders",
   "sortOrder",
-  "showModTime",
-  "autoSave"
+  "showModTime"
 ];
 var LISTING_KEYS = [
   "showHidden",
@@ -431,8 +429,9 @@ var TEXT = {
     tooLarge: "\u6587\u4EF6\u592A\u5927\uFF0C\u5DF2\u4EA4\u7ED9\u7CFB\u7EDF\u7A0B\u5E8F\u6253\u5F00",
     conflict: "\u6587\u4EF6\u5DF2\u88AB\u5176\u4ED6\u7A0B\u5E8F\u4FEE\u6539",
     saved: "\u5DF2\u4FDD\u5B58",
-    restored: "\u5DF2\u64A4\u9500\u4E0A\u4E00\u6B21\u4FDD\u5B58",
-    noUndo: "\u6CA1\u6709\u53EF\u64A4\u9500\u7684\u4FDD\u5B58\u8BB0\u5F55",
+    reverted: "\u5DF2\u6062\u590D\u5230\u6253\u5F00\u65F6",
+    restored: "\u5DF2\u6062\u590D\u4F60\u7684\u7F16\u8F91",
+    noBaseline: "\u8FD9\u4E2A\u6587\u4EF6\u6CA1\u6709\u53EF\u6062\u590D\u7684\u5907\u4EFD",
     failed: "\u64CD\u4F5C\u5931\u8D25",
     externalOpened: "\u5DF2\u7528\u7CFB\u7EDF\u7A0B\u5E8F\u6253\u5F00"
   },
@@ -443,8 +442,9 @@ var TEXT = {
     tooLarge: "File is too large \u2014 opened with the system app instead",
     conflict: "The file changed on disk",
     saved: "Saved",
-    restored: "Reverted the last save",
-    noUndo: "Nothing to undo",
+    reverted: "Reverted to how it was when you opened it",
+    restored: "Your edits are back",
+    noBaseline: "No snapshot for this file",
     failed: "Something went wrong",
     externalOpened: "Opened with the system app"
   }
@@ -652,9 +652,28 @@ function activate(ctx) {
   function finchFileUrl(abs) {
     return `finch-file://local?path=${encodeURIComponent(abs)}`;
   }
-  function undoSlot(state, rel) {
+  function lineCount(text) {
+    return text.split("\n").length;
+  }
+  function baselineSlot(state, rel) {
     const safe = Buffer.from(`${state.sessionId}::${rel}`).toString("base64url").slice(0, 120);
-    return path3.join(undoDir, `${safe}.txt`);
+    return path3.join(undoDir, `${safe}.baseline.txt`);
+  }
+  function baselineInfo(state, rel, current) {
+    if (!settings().keepBackups) return { exists: false, lineCount: 0, atBaseline: false };
+    const slot = baselineSlot(state, rel);
+    if (!fs3.existsSync(slot)) return { exists: false, lineCount: 0, atBaseline: false };
+    let stored = "";
+    try {
+      stored = fs3.readFileSync(slot, "utf8");
+    } catch {
+      return { exists: false, lineCount: 0, atBaseline: false };
+    }
+    return {
+      exists: true,
+      lineCount: lineCount(stored),
+      atBaseline: stored === current
+    };
   }
   function openFile(state, rel) {
     const abs = resolveInside(state.root, rel);
@@ -675,8 +694,7 @@ function activate(ctx) {
       absPath: abs,
       size: stat.size,
       mtimeMs: stat.mtimeMs,
-      changed,
-      hasUndo: settings().keepBackups && fs3.existsSync(undoSlot(state, toRel(state.root, abs)))
+      changed
     };
     if (classification.kind === "text") {
       let content = "";
@@ -685,13 +703,23 @@ function activate(ctx) {
       } catch {
         return { type: "error", message: t("failed") };
       }
+      if (classification.editable && settings().keepBackups) {
+        const slot = baselineSlot(state, toRel(state.root, abs));
+        if (!fs3.existsSync(slot)) {
+          try {
+            fs3.writeFileSync(slot, content);
+          } catch {
+          }
+        }
+      }
       return {
         ...base,
         kind: "text",
         flavor: classification.flavor,
         editable: classification.editable,
         content,
-        lineCount: content.split("\n").length
+        lineCount: lineCount(content),
+        baseline: baselineInfo(state, toRel(state.root, abs), content)
       };
     }
     if (classification.kind === "image") {
@@ -719,11 +747,6 @@ function activate(ctx) {
     const classification = classify(abs, stat.size, MAX_TEXT_BYTES);
     if (!classification.editable) return { type: "error", message: t("denied") };
     try {
-      if (settings().keepBackups) {
-        fs3.writeFileSync(undoSlot(state, rel), fs3.readFileSync(abs));
-      } else {
-        fs3.rmSync(undoSlot(state, rel), { force: true });
-      }
       fs3.writeFileSync(abs, content, "utf8");
     } catch {
       return { type: "error", message: t("failed") };
@@ -736,31 +759,34 @@ function activate(ctx) {
       reason: "save",
       mtimeMs: next.mtimeMs,
       size: next.size,
-      hasUndo: settings().keepBackups,
+      baseline: baselineInfo(state, rel, content),
       message: t("saved")
     };
   }
-  function undoFile(state, rel) {
-    const slot = undoSlot(state, rel);
+  function revertFile(state, rel) {
     const abs = resolveInside(state.root, rel);
     if (!abs) return { type: "error", message: t("denied") };
-    if (!fs3.existsSync(slot)) return { type: "error", message: t("noUndo") };
+    const slot = baselineSlot(state, rel);
+    if (!fs3.existsSync(slot)) return { type: "error", message: t("noBaseline") };
     try {
-      fs3.writeFileSync(abs, fs3.readFileSync(slot));
-      fs3.rmSync(slot, { force: true });
+      const stored = fs3.readFileSync(slot, "utf8");
+      const current = fs3.readFileSync(abs, "utf8");
+      fs3.writeFileSync(abs, stored, "utf8");
+      fs3.writeFileSync(slot, current, "utf8");
     } catch {
       return { type: "error", message: t("failed") };
     }
     state.scan = null;
     const next = fs3.statSync(abs);
+    const nowAtBaseline = baselineInfo(state, rel, fs3.readFileSync(abs, "utf8"));
     return {
       type: "saved",
       rel,
-      reason: "undo",
+      reason: "revert",
       mtimeMs: next.mtimeMs,
       size: next.size,
-      hasUndo: false,
-      message: t("restored")
+      baseline: nowAtBaseline,
+      message: nowAtBaseline.atBaseline ? t("reverted") : t("restored")
     };
   }
   function openExternally(state, rel, reveal) {
@@ -859,8 +885,8 @@ function activate(ctx) {
           saveFile(state, String(message.rel ?? ""), String(message.content ?? ""), Number(message.baseMtimeMs ?? 0))
         );
         return;
-      case "undo":
-        await panel.postMessage(undoFile(state, String(message.rel ?? "")));
+      case "revert":
+        await panel.postMessage(revertFile(state, String(message.rel ?? "")));
         return;
       case "openExternal":
         await panel.postMessage(openExternally(state, String(message.rel ?? ""), false));

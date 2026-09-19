@@ -18110,19 +18110,11 @@ ${text2}</tr>
       wrapLongLines: false,
       showLineNumbers: false,
       externalChange: "auto",
-      autoSave: false,
       keepBackups: true
     };
-    const DEMO_OVERRIDABLE = [
-      "showHidden",
-      "textOnly",
-      "hideIgnoredFolders",
-      "sortOrder",
-      "showModTime",
-      "autoSave",
-      "keepBackups"
-    ];
+    const DEMO_OVERRIDABLE = ["showHidden", "textOnly", "hideIgnoredFolders", "sortOrder", "showModTime", "keepBackups"];
     const overrides = [];
+    const demoReverted = {};
     const visibleEntries = (rel) => {
       const entries2 = (tree[rel] ?? []).filter((entry) => {
         if (!demoState.showHidden && entry.name.startsWith(".")) return false;
@@ -18174,7 +18166,11 @@ ${text2}</tr>
           reason: "save",
           mtimeMs: Date.now(),
           size: String(message.content ?? "").length,
-          hasUndo: demoState.keepBackups,
+          baseline: {
+            exists: true,
+            lineCount: sample.split("\n").length - 3,
+            atBaseline: Boolean(demoReverted[message.rel])
+          },
           message: "\u5DF2\u4FDD\u5B58"
         });
       } else if (message.type === "setSetting") {
@@ -18195,20 +18191,40 @@ ${text2}</tr>
         emit({ type: "dir", rel: "", entries: visibleEntries("") });
       } else if (message.type === "open") {
         const name = message.rel.split("/").pop();
+        const text2 = name.endsWith(".md") ? sample : '{\n  "demo": true\n}';
         emit({
           type: "file",
           rel: message.rel,
           name,
-          size: sample.length,
+          size: text2.length,
           mtimeMs: Date.now(),
           changed: true,
           kind: "text",
           flavor: name.endsWith(".md") ? "markdown" : "code",
           editable: true,
-          content: name.endsWith(".md") ? sample : '{\n  "demo": true\n}',
-          lineCount: sample.split("\n").length,
-          hasUndo: name.endsWith(".md"),
+          content: text2,
+          lineCount: text2.split("\n").length,
+          baseline: {
+            exists: name.endsWith(".md"),
+            lineCount: sample.split("\n").length - 3,
+            atBaseline: Boolean(demoReverted[message.rel])
+          },
           absPath: `/Users/baizhou/Demo/ArrowsPuzzle/${message.rel}`
+        });
+      } else if (message.type === "revert") {
+        demoReverted[message.rel] = !demoReverted[message.rel];
+        emit({
+          type: "saved",
+          rel: message.rel,
+          reason: "revert",
+          mtimeMs: Date.now(),
+          size: sample.length,
+          baseline: {
+            exists: true,
+            lineCount: sample.split("\n").length - 3,
+            atBaseline: Boolean(demoReverted[message.rel])
+          },
+          message: demoReverted[message.rel] ? "\u5DF2\u6062\u590D\u5230\u6253\u5F00\u65F6" : "\u5DF2\u6062\u590D\u4F60\u7684\u7F16\u8F91"
         });
       } else if (message.type === "scan") {
         const all = Object.values(tree).flat();
@@ -18275,7 +18291,6 @@ ${text2}</tr>
       wrapLongLines: false,
       showLineNumbers: false,
       externalChange: "auto",
-      autoSave: false,
       keepBackups: true
     },
     overridable: [],
@@ -18291,18 +18306,13 @@ ${text2}</tr>
     { key: "textOnly", label: "\u53EA\u663E\u793A\u6587\u672C\u7C7B\u6587\u4EF6" },
     { key: "showModTime", label: "\u663E\u793A\u4FEE\u6539\u65F6\u95F4" },
     { key: "hideIgnoredFolders", label: "\u9690\u85CF\u88AB\u5FFD\u7565\u7684\u76EE\u5F55" },
-    { key: "sortOrder", label: "\u6700\u8FD1\u4FEE\u6539\u5728\u524D", cycle: ["name", "recent"] },
-    { group: "\u7F16\u8F91" },
-    { key: "autoSave", label: "\u81EA\u52A8\u4FDD\u5B58" },
-    { key: "keepBackups", label: "\u4FDD\u7559\u53EF\u56DE\u6EDA\u7684\u526F\u672C" }
+    { key: "sortOrder", label: "\u6700\u8FD1\u4FEE\u6539\u5728\u524D", cycle: ["name", "recent"] }
   ];
   var AUTO_SAVE_DELAY_MS = 900;
   var el = (id) => document.getElementById(id);
   var ui = {
     crumb: el("crumb"),
-    modeSwitch: el("mode-switch"),
-    save: el("btn-save"),
-    undo: el("btn-undo"),
+    modeBtn: el("btn-mode"),
     external: el("btn-external"),
     viewer: el("viewer"),
     empty: el("empty"),
@@ -18330,6 +18340,7 @@ ${text2}</tr>
     settingsPop: el("settings-pop"),
     settingsRows: el("settings-rows"),
     settingsReset: el("settings-reset"),
+    fileActions: el("file-actions"),
     saveStatus: el("save-status")
   };
   function send(message) {
@@ -18603,10 +18614,21 @@ ${text2}</tr>
     card.append(name, meta, button);
     ui.empty.appendChild(card);
   }
+  function updateModeButton() {
+    const file = S.current;
+    const isText = Boolean(file && file.kind === "text");
+    ui.modeBtn.hidden = !isText;
+    if (!isText) return;
+    ui.modeBtn.textContent = S.mode === "source" ? "\u67E5\u770B\u9884\u89C8" : "\u67E5\u770B\u6E90\u7801";
+    ui.modeBtn.title = S.mode === "source" ? "\u5207\u56DE\u6E32\u67D3\u540E\u7684\u9884\u89C8" : "\u67E5\u770B\u5E76\u7F16\u8F91 Markdown \u6E90\u7801";
+  }
   function applyMode() {
     const file = S.current;
-    if (!file || file.kind !== "text") return;
-    [...ui.modeSwitch.children].forEach((child) => child.classList.toggle("on", child.dataset.mode === S.mode));
+    if (!file || file.kind !== "text") {
+      updateModeButton();
+      return;
+    }
+    updateModeButton();
     if (S.mode === "source") {
       setPanels({ editor: true });
       if (!S.dirty && ui.editor.value !== file.content) ui.editor.value = file.content;
@@ -18616,18 +18638,9 @@ ${text2}</tr>
     }
   }
   function openFile(rel) {
-    if (S.dirty && S.current && S.current.rel !== rel) {
-      if (S.settings.autoSave) {
-        flushAutoSave();
-      } else {
-        const leave = window.confirm("\u5F53\u524D\u6587\u4EF6\u6709\u672A\u4FDD\u5B58\u7684\u4FEE\u6539\uFF0C\u653E\u5F03\u5E76\u5207\u6362\u5417\uFF1F");
-        if (!leave) return;
-      }
-    }
+    if (S.dirty && S.current && S.current.rel !== rel) flushAutoSave();
     clearTimeout(S.autoSaveTimer);
     S.dirty = false;
-    ui.save.disabled = true;
-    ui.undo.disabled = true;
     ui.external.disabled = true;
     S.diskConflict = null;
     hideBanner();
@@ -18641,9 +18654,8 @@ ${text2}</tr>
     resetEmpty();
     ui.editor.value = file.kind === "text" ? file.content : "";
     renderGutter();
-    ui.save.disabled = true;
-    ui.modeSwitch.hidden = file.kind !== "text";
     S.mode = file.flavor === "markdown" && S.settings.markdownView === "source" ? "source" : "preview";
+    updateModeButton();
     if (file.kind === "image") {
       setPanels({ media: true });
       ui.media.innerHTML = "";
@@ -18657,9 +18669,9 @@ ${text2}</tr>
       showBinaryCard(file);
     }
     ui.external.disabled = false;
-    ui.undo.disabled = !file.hasUndo;
     S.autoSavePaused = false;
-    if (S.settings.autoSave) setSaveStatus("");
+    setSaveStatus("");
+    renderFileActions();
     renderCrumb();
     renderTree();
   }
@@ -18677,11 +18689,11 @@ ${text2}</tr>
   function hideBanner() {
     ui.banner.hidden = true;
   }
-  function save({ silent = false } = {}) {
+  function save({ silent = true } = {}) {
     const file = S.current;
     if (!file || !file.editable) return;
     clearTimeout(S.autoSaveTimer);
-    if (silent && S.settings.autoSave) setSaveStatus("saving");
+    if (silent) setSaveStatus("saving");
     const content = ui.editor.value;
     send({ type: "save", rel: file.rel, content, baseMtimeMs: file.mtimeMs });
   }
@@ -18689,8 +18701,7 @@ ${text2}</tr>
     const file = S.current;
     if (!file) return;
     S.dirty = ui.editor.value !== file.content;
-    ui.save.disabled = !S.dirty;
-    if (S.settings.autoSave && !S.autoSavePaused) setSaveStatus("dirty");
+    if (!S.autoSavePaused) setSaveStatus("dirty");
     scheduleAutoSave();
     renderGutter();
     renderCrumb();
@@ -18702,7 +18713,7 @@ ${text2}</tr>
     const meta = event.metaKey || event.ctrlKey;
     if (meta && event.key.toLowerCase() === "s") {
       event.preventDefault();
-      if (!ui.save.disabled) save();
+      if (S.current && S.current.editable && S.dirty) save();
     }
     if (meta && event.key.toLowerCase() === "r" && event.shiftKey) {
       event.preventDefault();
@@ -18710,21 +18721,13 @@ ${text2}</tr>
     }
     if (event.key === "Escape") hideCtxMenu();
   });
-  ui.save.addEventListener("click", () => save());
-  ui.undo.addEventListener("click", () => {
-    if (!S.current) return;
-    send({ type: "undo", rel: S.current.rel });
-  });
   ui.external.addEventListener("click", () => {
     if (!S.current) return;
     send({ type: "openExternal", rel: S.current.rel });
   });
   ui.bannerClose.addEventListener("click", hideBanner);
-  ui.modeSwitch.addEventListener("click", (event) => {
-    const button = event.target.closest("button");
-    if (!button) return;
-    S.mode = button.dataset.mode;
-    [...ui.modeSwitch.children].forEach((child) => child.classList.toggle("on", child === button));
+  ui.modeBtn.addEventListener("click", () => {
+    S.mode = S.mode === "source" ? "preview" : "source";
     applyMode();
   });
   function openContextMenu(x, y, target) {
@@ -18811,21 +18814,14 @@ ${text2}</tr>
     return S.overrides.includes(key);
   }
   function applySettings() {
-    const { codeFontSize, wrapLongLines, showLineNumbers, autoSave } = S.settings;
+    const { codeFontSize, wrapLongLines, showLineNumbers } = S.settings;
     ui.editor.style.fontSize = codeFontSize > 0 ? `${codeFontSize}px` : "";
     ui.gutter.style.fontSize = codeFontSize > 0 ? `${codeFontSize}px` : "";
     ui.editor.classList.toggle("wrap", Boolean(wrapLongLines));
     ui.gutter.hidden = !showLineNumbers;
     if (showLineNumbers) renderGutter();
-    ui.save.hidden = Boolean(autoSave);
-    ui.saveStatus.hidden = !autoSave;
-    if (autoSave) {
-      setSaveStatus(S.dirty ? "dirty" : "");
-    } else {
-      clearTimeout(S.savedFlashTimer);
-      ui.saveStatus.classList.remove("dirty", "saving", "saved", "failed");
-    }
     renderSettingsRows();
+    renderFileActions();
     renderFoot();
   }
   function setSaveStatus(kind, text2) {
@@ -18834,7 +18830,7 @@ ${text2}</tr>
     if (kind) ui.saveStatus.classList.add(kind);
     const labels = { dirty: "\u672A\u4FDD\u5B58", saving: "\u4FDD\u5B58\u4E2D\u2026", saved: "\u5DF2\u4FDD\u5B58", failed: "\u4FDD\u5B58\u5931\u8D25" };
     ui.saveStatus.textContent = text2 ?? labels[kind] ?? "";
-    ui.saveStatus.hidden = !S.settings.autoSave || !kind;
+    ui.saveStatus.hidden = !kind;
     if (kind === "saved") {
       S.savedFlashTimer = setTimeout(() => {
         ui.saveStatus.classList.remove("saved");
@@ -18844,17 +18840,60 @@ ${text2}</tr>
     }
   }
   function scheduleAutoSave() {
-    if (!S.settings.autoSave || S.autoSavePaused) return;
+    if (S.autoSavePaused) return;
     clearTimeout(S.autoSaveTimer);
     S.autoSaveTimer = setTimeout(() => {
       if (!S.current || !S.current.editable || !S.dirty) return;
-      save({ silent: true });
+      save();
     }, AUTO_SAVE_DELAY_MS);
   }
   function flushAutoSave() {
     clearTimeout(S.autoSaveTimer);
-    if (!S.settings.autoSave || S.autoSavePaused) return;
-    if (S.current && S.current.editable && S.dirty) save({ silent: true });
+    if (S.autoSavePaused) return;
+    if (S.current && S.current.editable && S.dirty) save();
+  }
+  function renderFileActions() {
+    ui.fileActions.innerHTML = "";
+    const file = S.current;
+    if (!file || !file.editable) return;
+    const baseline = file.baseline ?? { exists: false, lineCount: 0, atBaseline: false };
+    const row = document.createElement("div");
+    row.className = "prow action";
+    const box = document.createElement("span");
+    box.className = "box action";
+    box.textContent = "\u21BA";
+    const label = document.createElement("span");
+    label.className = "prow-label";
+    const value = document.createElement("span");
+    value.className = "prow-value";
+    if (!baseline.exists) {
+      label.textContent = "\u64A4\u9500\u672C\u6B21\u7F16\u8F91";
+      value.textContent = "\u65E0\u5FEB\u7167";
+      row.classList.add("disabled");
+      row.title = "\u8FD9\u4E2A\u6587\u4EF6\u6CA1\u6709\u53EF\u6062\u590D\u7684\u5FEB\u7167";
+    } else if (baseline.atBaseline) {
+      const delta = (ui.editor.value ? ui.editor.value.split("\n").length : 0) - baseline.lineCount;
+      label.textContent = "\u6062\u590D\u6211\u7684\u7F16\u8F91";
+      value.textContent = delta > 0 ? `+${delta} \u884C` : delta < 0 ? `${delta} \u884C` : "";
+      row.title = "\u628A\u4F60\u521A\u624D\u7684\u7F16\u8F91\u6362\u56DE\u6765";
+    } else {
+      const currentLines = S.dirty ? ui.editor.value.split("\n").length : file.lineCount ?? 0;
+      const delta = baseline.lineCount - currentLines;
+      label.textContent = "\u64A4\u9500\u672C\u6B21\u7F16\u8F91";
+      value.textContent = delta > 0 ? `+${delta} \u884C` : delta < 0 ? `${delta} \u884C` : "";
+      row.title = "\u6062\u590D\u5230\u6253\u5F00\u8FD9\u4E2A\u6587\u4EF6\u65F6\u7684\u5185\u5BB9 \u2014\u2014 \u518D\u70B9\u4E00\u6B21\u5C31\u80FD\u6362\u56DE\u6765";
+    }
+    row.append(box, label, value);
+    if (baseline.exists) {
+      row.addEventListener("click", () => {
+        flushAutoSave();
+        send({ type: "revert", rel: file.rel });
+      });
+    }
+    const header = document.createElement("div");
+    header.className = "popover-group";
+    header.textContent = "\u8FD9\u4E2A\u6587\u4EF6";
+    ui.fileActions.append(header, row);
   }
   function renderGutter() {
     if (ui.gutter.hidden) return;
@@ -18912,7 +18951,10 @@ ${text2}</tr>
     const open = typeof force === "boolean" ? force : ui.settingsPop.hidden;
     ui.settingsPop.hidden = !open;
     ui.settingsBtn.setAttribute("aria-expanded", String(open));
-    if (open) renderSettingsRows();
+    if (open) {
+      renderSettingsRows();
+      renderFileActions();
+    }
   }
   ui.settingsBtn.addEventListener("click", (event) => {
     event.stopPropagation();
@@ -19095,28 +19137,28 @@ ${text2}</tr>
         if (S.current && S.current.rel === message.rel) {
           S.current.mtimeMs = message.mtimeMs;
           S.current.size = message.size;
-          S.current.hasUndo = Boolean(message.hasUndo);
-          ui.undo.disabled = !S.current.hasUndo;
+          if (message.baseline) S.current.baseline = message.baseline;
           S.dirty = false;
-          ui.save.disabled = true;
-          if (S.settings.autoSave) setSaveStatus("saved");
-          if (message.reason === "undo") {
+          setSaveStatus("saved");
+          if (message.reason === "revert") {
             send({ type: "open", rel: message.rel });
           } else {
             S.current.content = ui.editor.value;
+            S.current.lineCount = ui.editor.value.split("\n").length;
             renderCrumb();
+            renderFileActions();
           }
         }
         S.changed.add(message.rel);
         hideBanner();
-        if (!S.settings.autoSave) toast(message.message ?? "\u5DF2\u4FDD\u5B58");
+        if (message.reason === "revert") toast(message.message ?? "\u5DF2\u6062\u590D");
         send({ type: "listDir", rel: "" });
         break;
       }
       case "saveConflict": {
         S.diskConflict = message;
         S.autoSavePaused = true;
-        if (S.settings.autoSave) setSaveStatus("failed", "\u78C1\u76D8\u4E0A\u6709\u66F4\u65B0");
+        setSaveStatus("failed", "\u78C1\u76D8\u4E0A\u6709\u66F4\u65B0");
         showBanner("\u8FD9\u4E2A\u6587\u4EF6\u5728\u78C1\u76D8\u4E0A\u5DF2\u88AB\u4FEE\u6539", "\u4EE5\u6211\u7684\u7248\u672C\u8986\u76D6", () => {
           if (!S.current) return;
           S.autoSavePaused = false;

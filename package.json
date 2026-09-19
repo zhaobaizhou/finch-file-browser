@@ -54,7 +54,7 @@
   ],
   "finch": {
     "manifestVersion": 1,
-    "name": "Session Files",
+    "name": "File Browser",
     "description": "Browse, preview and edit the files in this conversation's folder, without leaving the session.",
     "main": "dist/index.js",
     "activationEvents": [
@@ -183,17 +183,10 @@
           "default": "auto"
         },
         {
-          "key": "autoSave",
-          "type": "boolean",
-          "label": "Save automatically while typing",
-          "description": "Hides the Save button and writes changes to disk shortly after you stop typing. The disk-conflict check still applies.",
-          "default": false
-        },
-        {
           "key": "keepBackups",
           "type": "boolean",
-          "label": "Keep a rollback copy before each save",
-          "description": "Stores the previous version in the mini tool's private storage so \"Roll back last save\" works. Turn off to stop using that space.",
+          "label": "Keep a snapshot of files as you opened them",
+          "description": "Enables \"Revert my edits\" in the panel menu, which restores a file to how it looked when this session first opened it — and can be pressed again to bring your edits back. Turn off to stop using that storage.",
           "default": true
         }
       ]
