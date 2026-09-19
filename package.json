@@ -1,6 +1,6 @@
 {
   "name": "finch-file-browser",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Browse, preview and edit the files in the current Finch conversation's folder, right inside the session panel.",
   "author": {
     "name": "zhaobaizhou",
@@ -50,6 +50,7 @@
     "dist/",
     "i18n/",
     "icons/",
+    "CHANGELOG.md",
     "icon.png",
     "README.md"
   ],
