@@ -15,11 +15,19 @@ Releases are batched by user-visible milestone rather than published per commit 
   Finch's own modal dialog; deletion goes to the Trash (never `unlink`), and the folder root
   cannot be renamed or removed. The viewer follows a rename and clears when the open file is
   trashed.
+- **Keyboard navigation**: `⌘P` jumps to the filter, `↓` from the filter hands over to the list,
+  and `↑↓` / `←→` / `Enter` / `Home` / `End` / `Esc` drive the tree. Clicking a row parks the
+  keyboard cursor on it so the two input styles continue from the same place.
+- **Image and SVG viewer**: wheel zoom anchored at the pointer, drag to pan (clamped so the
+  picture can never be flung out of view), double-click to switch between fit and 1:1, plus a
+  fit/1:1 chip showing the current percentage. Bitmaps only ever fit *down* so a small icon is
+  not blown up blurry; vector art fits up, losslessly.
 
-### Planned
+### Fixed
 
-- Keyboard navigation (`⌘P` to the filter, `↑↓`/`Enter`/`Esc` in the tree).
-- Image preview: zoom, pan, fit-to-window.
+- The image viewer fitted itself before the picture had loaded, so the first render used either
+  zero dimensions or — worse — the *previous* picture's dimensions. The fit is now recomputed on
+  the image's `load` event and refuses to run while `naturalWidth` is 0.
 
 ## [0.3.0] — 2026-09-19
 

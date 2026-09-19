@@ -43,7 +43,14 @@
             <div class="gutter" id="gutter" hidden></div>
             <textarea id="editor" spellcheck="false"></textarea>
           </div>
-          <div class="media" id="media" hidden></div>
+          <div class="media" id="media" hidden>
+          <img id="media-img" alt="" />
+          <div class="media-tools" id="media-tools" hidden>
+            <span class="zoom" id="media-zoom">100%</span>
+            <button class="link" id="media-fit" type="button">适应窗口</button>
+            <button class="link" id="media-actual" type="button">1:1</button>
+          </div>
+        </div>
         </section>
 
         <div class="splitter" id="splitter" role="separator" aria-orientation="vertical"></div>

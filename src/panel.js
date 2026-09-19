@@ -51,6 +51,8 @@ function createDemoBridge() {
     reference: [
       { name: 'apk-identity.json', rel: 'reference/apk-identity.json', dir: false, size: 640, mtimeMs: Date.now() - 86400_000 * 2, ignored: false },
       { name: 'logo.svg', rel: 'reference/logo.svg', dir: false, size: 520, mtimeMs: Date.now() - 86400_000 * 4, ignored: false },
+      { name: 'diagram.svg', rel: 'reference/diagram.svg', dir: false, size: 1180, mtimeMs: Date.now() - 86400_000 * 5, ignored: false },
+      { name: 'screenshot.png', rel: 'reference/screenshot.png', dir: false, size: 184320, mtimeMs: Date.now() - 86400_000 * 6, ignored: false },
     ],
   };
   const demoState = {
@@ -111,6 +113,7 @@ function createDemoBridge() {
         mode: S.mode,
         dirty: S.dirty,
         dirs: Object.fromEntries([...S.dirs.entries()].map(([key, list]) => [key, list.map((entry) => entry.rel)])),
+        media: { ...S.media },
       };
     },
     log() {
@@ -185,9 +188,17 @@ function createDemoBridge() {
       emit({ type: 'dir', rel: '', entries: visibleEntries('') });
     } else if (message.type === 'open') {
       const name = message.rel.split('/').pop();
+      if (name.endsWith('.png')) {
+        // A generated placeholder big enough to exercise zoom and pan.
+        emit({ type: 'file', rel: message.rel, name, size: 184320, mtimeMs: Date.now(), changed: false, kind: 'image', flavor: 'image', editable: false, url: DEMO_RASTER });
+        return;
+      }
       const isSvg = name.endsWith('.svg');
+      const isBigSvg = name === 'diagram.svg';
       const text = isSvg
-        ? '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#16a34a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">\n  <rect width="18" height="16" x="3" y="4" rx="2.5"/>\n  <path d="M10 4v16"/>\n  <path d="M13.5 8.75h4"/>\n  <path d="M13.5 12h4"/>\n  <path d="M13.5 15.25h2.5"/>\n</svg>\n'
+        ? isBigSvg
+          ? '<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="800" viewBox="0 0 1200 800">\n  <rect width="1200" height="800" fill="#0f172a"/>\n  <g fill="none" stroke="#38bdf8" stroke-width="4">\n    <rect x="60" y="60" width="420" height="240" rx="18"/>\n    <rect x="720" y="60" width="420" height="240" rx="18"/>\n    <rect x="60" y="500" width="420" height="240" rx="18"/>\n    <rect x="720" y="500" width="420" height="240" rx="18"/>\n    <path d="M480 180h240M840 300v200M480 620h240M360 300v200"/>\n  </g>\n  <g fill="#e2e8f0" font-family="monospace" font-size="34">\n    <text x="110" y="200">panel.html</text>\n    <text x="770" y="200">panel.js</text>\n    <text x="110" y="640">index.ts</text>\n    <text x="770" y="640">paths.ts</text>\n  </g>\n</svg>\n'
+          : '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#16a34a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">\n  <rect width="18" height="16" x="3" y="4" rx="2.5"/>\n  <path d="M10 4v16"/>\n  <path d="M13.5 8.75h4"/>\n  <path d="M13.5 12h4"/>\n  <path d="M13.5 15.25h2.5"/>\n</svg>\n'
         : name.endsWith('.md')
           ? sample
           : '{\n  "demo": true\n}';
@@ -314,7 +325,13 @@ const S = {
   popView: 'settings',
   history: [],
   historyRel: '',
+  media: { scale: 1, offsetX: 0, offsetY: 0, fitPending: true, allowUpscale: false },
+  cursorRel: null,
+  cursorScroll: false,
 };
+
+const DEMO_RASTER =
+  'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAUAAAADICAIAAAAWZq/8AAACO0lEQVR42u3dMQrCQBRF0RdxFSnSpxcsUrqd1BaClWBhPdvJAgTX4TpsLY2iOOSc2mrg8hPI+JuuHwLUaeUIQMCAgAEBg4ABAQMCBgQMAgYEDAgYlmv9yo/aMjkp+LH7uDOBwSM0UO8j9KyZDnxi1hurCQweoQEBAwIGAQMCBgQMCBgEDAgYEDAIGBAwIGBAwCBgQMCAgAEBg4ABAQMCBgEDAgbyh3/s/rb94eisn13OJ4eACQwCBgQMCBgQMAgYEDAgYEDAIGBAwICAIS4zxLf7YAIDAgYEDAIGBAwIGBAwCBgQMCBgEDAgYEDAgIAhrhPGbqTYuoQJDAgYBAwIGBAwIGAQMCBgQMCAgEHAgICB2I0EJjAgYEDAgIBBwICAAQEDAgYBAwIGBAwCBgQMCBiI3UjEnVATGBAwIGAQMCBgQMCAgEHAgIABAQMCBgEDsRsJMIFBwICAAQEDAgYBAwIGBAwIGAQMCBgQMAgYEDAQu5GIrUuYwCBgQMCAgEHAjgAEDAgYEDAIGBAwIGBAwBCXGeJrdTCBAQGDgAEBAwIGBAwCBgQMCBgQMAgYEDAgYBAwENcJYzcSsXXJBAYEDAIGBAwIGATsCEDAgIABAYOAAQEDAgZiNxKYwICAgSoeobdl46y/5zreHIIJDAgYEDAgYBAwIGBAwICAQcCAgAEBg4CBuMwQX9uDCQwIGAQM1PsO3JbJkYEJDAgYlq3p+sEpgAkMCBgQMAgYEDAgYEDAIGBAwICAQcBAbR5HqCX8JeoCTAAAAABJRU5ErkJggg==';
 
 const QUICK_SETTINGS = [
   { group: '显示与排序' },
@@ -362,6 +379,11 @@ const ui = {
   historyView: el('history-view'),
   popoverFoot: el('popover-foot'),
   saveStatus: el('save-status'),
+  mediaImg: el('media-img'),
+  mediaTools: el('media-tools'),
+  mediaZoom: el('media-zoom'),
+  mediaFit: el('media-fit'),
+  mediaActual: el('media-actual'),
 };
 
 /* ── helpers ─────────────────────────────────────────────────────────────── */
@@ -515,7 +537,14 @@ function rowEl({ rel, name, dir, size, mtimeMs, changed, touched, hits, ignored 
   }
 
   row.title = rel;
-  if (options.onClick) row.addEventListener('click', options.onClick);
+  row.addEventListener('click', () => {
+    // Clicking a row also parks the keyboard cursor there, so ↑↓ continue from it.
+    S.cursorRel = rel;
+    S.cursorScroll = false;
+    applyCursor();
+    if (ui.tree.contains(row)) ui.tree.focus({ preventScroll: true });
+    if (options.onClick) options.onClick();
+  });
   row.addEventListener('contextmenu', (event) => {
     event.preventDefault();
     openContextMenu(event.clientX, event.clientY, { rel, name, dir });
@@ -572,6 +601,7 @@ function renderTree() {
     return fragment;
   };
   ui.tree.appendChild(walk('', roots));
+  applyCursor();
   renderFoot();
 }
 
@@ -628,15 +658,146 @@ function resetEmpty() {
   ui.empty.innerHTML = EMPTY_MARKUP;
 }
 
-/** Show a picture in the media pane (checkerboard background, centred). */
+/** Show a picture in the media pane. */
 function showMedia(src, name, { scalable = false } = {}) {
   setPanels({ media: true });
-  ui.media.classList.toggle('scalable', scalable);
-  ui.media.innerHTML = '';
-  const img = document.createElement('img');
-  img.src = src;
-  img.alt = name;
-  ui.media.appendChild(img);
+  // Vector art can be scaled up losslessly; a small bitmap should stay at 1:1
+  // until the user asks for more.
+  S.media.allowUpscale = scalable;
+  ui.mediaImg.alt = name;
+  ui.mediaImg.src = src;
+  ui.mediaTools.hidden = false;
+  resetMediaView();
+}
+
+/** Fit the picture inside the pane, centred, and remember that as the base state. */
+function resetMediaView() {
+  S.media.offsetX = 0;
+  S.media.offsetY = 0;
+  S.media.fitPending = true;
+  applyMediaView();
+}
+
+function mediaPaneSize() {
+  return { w: ui.media.clientWidth, h: ui.media.clientHeight };
+}
+
+// A freshly loaded picture always starts fitted — this is also the retry path for
+// the first render, which happens before the image has any dimensions.
+ui.mediaImg.addEventListener('load', () => {
+  if (ui.media.hidden) return;
+  S.media.fitPending = true;
+  applyMediaView();
+});
+
+function applyMediaView() {
+  const img = ui.mediaImg;
+  // `naturalWidth` is 0 before the picture loads, and still reports the *previous*
+  // picture until the new one finishes — never compute a fit from that.
+  if (!img.naturalWidth || !img.naturalHeight) return;
+  const natural = { w: img.naturalWidth, h: img.naturalHeight };
+  const pane = mediaPaneSize();
+  if (!pane.w || !pane.h) return;
+
+  if (S.media.fitPending) {
+    const fit = Math.min(pane.w / natural.w, pane.h / natural.h) * 0.96;
+    const limit = S.media.allowUpscale ? 20 : 1;
+    S.media.scale = Math.max(0.02, Math.min(fit, limit));
+    S.media.fitPending = false;
+  }
+
+  const scaled = { w: natural.w * S.media.scale, h: natural.h * S.media.scale };
+  const maxOffsetX = Math.max(0, (scaled.w - pane.w) / 2);
+  const maxOffsetY = Math.max(0, (scaled.h - pane.h) / 2);
+  S.media.offsetX = Math.max(-maxOffsetX, Math.min(maxOffsetX, S.media.offsetX));
+  S.media.offsetY = Math.max(-maxOffsetY, Math.min(maxOffsetY, S.media.offsetY));
+
+  const left = (pane.w - scaled.w) / 2 + S.media.offsetX;
+  const top = (pane.h - scaled.h) / 2 + S.media.offsetY;
+  img.style.transform = `translate(${left}px, ${top}px) scale(${S.media.scale})`;
+  ui.media.classList.toggle('pannable', maxOffsetX > 0 || maxOffsetY > 0);
+  ui.mediaZoom.textContent = `${Math.round(S.media.scale * 100)}%`;
+}
+
+/** Zoom keeping the point under the pointer fixed. */
+function zoomMediaAt(clientX, clientY, factor) {
+  const img = ui.mediaImg;
+  const natural = { w: img.naturalWidth || 1, h: img.naturalHeight || 1 };
+  const pane = mediaPaneSize();
+  const rect = ui.media.getBoundingClientRect();
+  const point = { x: clientX - rect.left, y: clientY - rect.top };
+
+  const before = S.media.scale;
+  const next = Math.max(0.02, Math.min(20, before * factor));
+  if (next === before) return;
+
+  const scaledBefore = { w: natural.w * before, h: natural.h * before };
+  const leftBefore = (pane.w - scaledBefore.w) / 2 + S.media.offsetX;
+  const topBefore = (pane.h - scaledBefore.h) / 2 + S.media.offsetY;
+  // Image-space point under the cursor.
+  const anchor = { x: (point.x - leftBefore) / before, y: (point.y - topBefore) / before };
+
+  S.media.scale = next;
+  const scaledNext = { w: natural.w * next, h: natural.h * next };
+  // Put that same image point back under the cursor by solving for the offset.
+  S.media.offsetX = point.x - anchor.x * next - (pane.w - scaledNext.w) / 2;
+  S.media.offsetY = point.y - anchor.y * next - (pane.h - scaledNext.h) / 2;
+  applyMediaView();
+}
+
+function setMediaScale(scale) {
+  S.media.scale = Math.max(0.02, Math.min(20, scale));
+  S.media.offsetX = 0;
+  S.media.offsetY = 0;
+  applyMediaView();
+}
+
+ui.media.addEventListener('wheel', (event) => {
+  if (ui.media.hidden) return;
+  event.preventDefault();
+  zoomMediaAt(event.clientX, event.clientY, event.deltaY < 0 ? 1.12 : 1 / 1.12);
+}, { passive: false });
+
+ui.media.addEventListener('mousedown', (event) => {
+  if (event.button !== 0) return;
+  const start = { x: event.clientX, y: event.clientY, ox: S.media.offsetX, oy: S.media.offsetY };
+  let moved = false;
+  const move = (moveEvent) => {
+    const dx = moveEvent.clientX - start.x;
+    const dy = moveEvent.clientY - start.y;
+    if (!moved && Math.abs(dx) + Math.abs(dy) < 3) return;
+    moved = true;
+    ui.media.classList.add('dragging');
+    S.media.offsetX = start.ox + dx;
+    S.media.offsetY = start.oy + dy;
+    applyMediaView();
+  };
+  const up = () => {
+    ui.media.classList.remove('dragging');
+    document.removeEventListener('mousemove', move);
+    document.removeEventListener('mouseup', up);
+  };
+  document.addEventListener('mousemove', move);
+  document.addEventListener('mouseup', up);
+});
+
+ui.media.addEventListener('dblclick', () => {
+  if (S.media.scale > 0.99 && S.media.scale < 1.01) resetMediaView();
+  else setMediaScale(1);
+});
+
+ui.mediaFit.addEventListener('click', () => resetMediaView());
+ui.mediaActual.addEventListener('click', () => setMediaScale(1));
+
+// Refit when the pane is resized while still in fit state.
+if (typeof ResizeObserver === 'function') {
+  new ResizeObserver(() => {
+    if (ui.media.hidden || !S.current) return;
+    const scaled = { w: (ui.mediaImg.naturalWidth || 1) * S.media.scale, h: (ui.mediaImg.naturalHeight || 1) * S.media.scale };
+    const pane = mediaPaneSize();
+    if (scaled.w < pane.w * 1.02 && scaled.h < pane.h * 1.02) S.media.fitPending = true;
+    applyMediaView();
+  }).observe(ui.media);
 }
 
 /**
@@ -644,7 +805,7 @@ function showMedia(src, name, { scalable = false } = {}) {
  * finch-file:// so the preview always matches what is in the editor, even
  * before it has been saved. SVG loaded as an <img> cannot run scripts.
  *
- * `scalable` lets a small icon (say 24×24) fill the pane — lossless for vector art.
+ * Vector art is fitted by scaling up (lossless); a bitmap only ever fits down.
  */
 function showSvg(source, name) {
   showMedia(`data:image/svg+xml;charset=utf-8,${encodeURIComponent(source)}`, name, { scalable: true });
@@ -846,11 +1007,32 @@ document.addEventListener('keydown', (event) => {
     event.preventDefault();
     if (S.current && S.current.editable && S.dirty) save();
   }
+  if (meta && event.key.toLowerCase() === 'p') {
+    event.preventDefault();
+    focusFilter();
+    return;
+  }
   if (meta && event.key.toLowerCase() === 'r' && event.shiftKey) {
     event.preventDefault();
     send({ type: 'refresh', rel: '' });
   }
-  if (event.key === 'Escape') hideCtxMenu();
+  if (event.key === 'Escape') {
+    // Layered: dismiss the transient surfaces first, then clear state.
+    if (!ui.ctxmenu.hidden) {
+      hideCtxMenu();
+      return;
+    }
+    if (!ui.settingsPop.hidden) {
+      toggleSettingsPop(false);
+      return;
+    }
+    if (S.searchQuery) {
+      ui.search.value = '';
+      ui.search.dispatchEvent(new Event('input', { bubbles: true }));
+      return;
+    }
+    hideCtxMenu();
+  }
 });
 
 ui.external.addEventListener('click', () => {
@@ -865,7 +1047,141 @@ ui.modeBtn.addEventListener('click', () => {
   applyMode();
 });
 
-/* ── context menu ────────────────────────────────────────────────────────── */
+/* ── keyboard navigation ─────────────────────────────────────────────────── */
+
+/** Rows in visual order, so ↑↓ walk exactly what the user sees. */
+function visibleRows() {
+  const container = S.tab === 'session' ? ui.sessionList : ui.tree;
+  return [...container.querySelectorAll('.row')];
+}
+
+function applyCursor() {
+  for (const row of [...ui.tree.querySelectorAll('.row.cursor'), ...ui.sessionList.querySelectorAll('.row.cursor')]) {
+    row.classList.remove('cursor');
+  }
+  if (!S.cursorRel) return;
+  const row = visibleRows().find((item) => item.dataset.rel === S.cursorRel);
+  if (!row) return;
+  row.classList.add('cursor');
+  if (S.cursorScroll) {
+    row.scrollIntoView({ block: 'nearest' });
+    S.cursorScroll = false;
+  }
+}
+
+function moveCursor(delta) {
+  const rows = visibleRows();
+  if (!rows.length) return;
+  const index = rows.findIndex((row) => row.dataset.rel === S.cursorRel);
+  const next = index < 0 ? (delta > 0 ? 0 : rows.length - 1) : Math.max(0, Math.min(rows.length - 1, index + delta));
+  S.cursorRel = rows[next].dataset.rel;
+  S.cursorScroll = true;
+  applyCursor();
+}
+
+function activateCursor() {
+  const row = visibleRows().find((item) => item.dataset.rel === S.cursorRel);
+  if (!row) return;
+  if (row.dataset.dir === '1') toggleDir(row.dataset.rel);
+  else openFile(row.dataset.rel);
+}
+
+function collapseOrParent() {
+  const rows = visibleRows();
+  const index = rows.findIndex((row) => row.dataset.rel === S.cursorRel);
+  if (index < 0) return;
+  const row = rows[index];
+  if (row.dataset.dir === '1' && S.open.has(S.cursorRel)) {
+    toggleDir(S.cursorRel);
+    return;
+  }
+  // Otherwise jump to the nearest ancestor that is present in the list.
+  for (let i = index - 1; i >= 0; i -= 1) {
+    const rel = rows[i].dataset.rel;
+    if (S.cursorRel.startsWith(`${rel}/`)) {
+      S.cursorRel = rel;
+      S.cursorScroll = true;
+      applyCursor();
+      return;
+    }
+  }
+}
+
+function onTreeKeydown(event) {
+  // Let the editor and the filter box keep their own key handling.
+  if (event.target === ui.editor || event.target === ui.search) return;
+  const meta = event.metaKey || event.ctrlKey;
+  switch (event.key) {
+    case 'ArrowDown':
+      event.preventDefault();
+      moveCursor(1);
+      break;
+    case 'ArrowUp':
+      event.preventDefault();
+      moveCursor(-1);
+      break;
+    case 'ArrowRight':
+      event.preventDefault();
+      if (S.cursorRel && !S.open.has(S.cursorRel)) toggleDir(S.cursorRel);
+      break;
+    case 'ArrowLeft':
+      event.preventDefault();
+      collapseOrParent();
+      break;
+    case 'Home':
+      event.preventDefault();
+      S.cursorRel = visibleRows()[0]?.dataset.rel ?? null;
+      S.cursorScroll = true;
+      applyCursor();
+      break;
+    case 'End': {
+      event.preventDefault();
+      const rows = visibleRows();
+      S.cursorRel = rows[rows.length - 1]?.dataset.rel ?? null;
+      S.cursorScroll = true;
+      applyCursor();
+      break;
+    }
+    case 'Enter':
+      if (!S.cursorRel) break;
+      event.preventDefault();
+      activateCursor();
+      break;
+    case 'Escape':
+      if (meta) break;
+      if (S.cursorRel) {
+        S.cursorRel = null;
+        applyCursor();
+      }
+      break;
+    default:
+      break;
+  }
+}
+
+// The filter box hands over to the list, so ↓ from the box lands on the first row.
+ui.search.addEventListener('keydown', (event) => {
+  if (event.key === 'ArrowDown') {
+    event.preventDefault();
+    const rows = visibleRows();
+    if (!rows.length) return;
+    S.cursorRel = rows[0].dataset.rel;
+    S.cursorScroll = true;
+    ui.tree.focus();
+    applyCursor();
+  }
+});
+
+ui.tree.addEventListener('keydown', onTreeKeydown);
+ui.sessionList.addEventListener('keydown', onTreeKeydown);
+ui.tree.tabIndex = 0;
+
+function focusFilter() {
+  toggleSettingsPop(false);
+  hideCtxMenu();
+  ui.search.focus();
+  ui.search.select();
+}
 
 function openContextMenu(x, y, target) {
   ui.ctxmenu.innerHTML = '';
