@@ -1,5 +1,6 @@
 // src/index.ts
 import { execFile } from "node:child_process";
+import crypto from "node:crypto";
 import fs3 from "node:fs";
 import path3 from "node:path";
 
@@ -387,6 +388,7 @@ var MAX_TEXT_BYTES = 2 * 1024 * 1024;
 var SCAN_TTL_MS = 4e3;
 var TOUCHED_TTL_MS = 3e3;
 var WATCH_DEBOUNCE_MS = 350;
+var SELF_WRITE_GRACE_MS = 4e3;
 var SETTING_DEFAULTS = {
   showHidden: false,
   textOnly: false,
@@ -401,8 +403,12 @@ var SETTING_DEFAULTS = {
   wrapLongLines: false,
   showLineNumbers: false,
   externalChange: "auto",
-  keepBackups: true
+  keepHistory: true
 };
+function formatClock(ms) {
+  const date = new Date(ms);
+  return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+}
 var OVERRIDABLE_KEYS = [
   "showHidden",
   "textOnly",
@@ -429,9 +435,8 @@ var TEXT = {
     tooLarge: "\u6587\u4EF6\u592A\u5927\uFF0C\u5DF2\u4EA4\u7ED9\u7CFB\u7EDF\u7A0B\u5E8F\u6253\u5F00",
     conflict: "\u6587\u4EF6\u5DF2\u88AB\u5176\u4ED6\u7A0B\u5E8F\u4FEE\u6539",
     saved: "\u5DF2\u4FDD\u5B58",
-    reverted: "\u5DF2\u6062\u590D\u5230\u6253\u5F00\u65F6",
-    restored: "\u5DF2\u6062\u590D\u4F60\u7684\u7F16\u8F91",
-    noBaseline: "\u8FD9\u4E2A\u6587\u4EF6\u6CA1\u6709\u53EF\u6062\u590D\u7684\u5907\u4EFD",
+    historyGone: "\u8FD9\u4E2A\u7248\u672C\u5DF2\u7ECF\u4E0D\u5728\u4E86",
+    historyRestored: "\u5DF2\u6062\u590D\u5230\u8FD9\u4E2A\u7248\u672C",
     failed: "\u64CD\u4F5C\u5931\u8D25",
     externalOpened: "\u5DF2\u7528\u7CFB\u7EDF\u7A0B\u5E8F\u6253\u5F00"
   },
@@ -442,9 +447,8 @@ var TEXT = {
     tooLarge: "File is too large \u2014 opened with the system app instead",
     conflict: "The file changed on disk",
     saved: "Saved",
-    reverted: "Reverted to how it was when you opened it",
-    restored: "Your edits are back",
-    noBaseline: "No snapshot for this file",
+    historyGone: "That version is gone",
+    historyRestored: "Restored that version",
     failed: "Something went wrong",
     externalOpened: "Opened with the system app"
   }
@@ -452,9 +456,9 @@ var TEXT = {
 function activate(ctx) {
   const storageRoot = ctx.storagePath;
   const dataRoot = findFinchDataRoot(storageRoot);
-  const undoDir = path3.join(storageRoot, "undo");
+  const historyRoot = path3.join(storageRoot, "history");
   try {
-    fs3.mkdirSync(undoDir, { recursive: true });
+    fs3.mkdirSync(historyRoot, { recursive: true });
   } catch {
   }
   const sessions = /* @__PURE__ */ new Map();
@@ -559,6 +563,7 @@ function activate(ctx) {
       scan: null,
       watcher: null,
       pendingPaths: /* @__PURE__ */ new Set(),
+      selfWrites: /* @__PURE__ */ new Map(),
       flushTimer: null,
       panels: /* @__PURE__ */ new Set()
     };
@@ -615,6 +620,9 @@ function activate(ctx) {
       void panel.postMessage(message).catch(() => void 0);
     }
   }
+  function markSelfWrite(state, rel) {
+    state.selfWrites.set(rel, Date.now() + SELF_WRITE_GRACE_MS);
+  }
   function ensureWatcher(state) {
     if (state.watcher) return;
     try {
@@ -627,10 +635,18 @@ function activate(ctx) {
         if (state.flushTimer) clearTimeout(state.flushTimer);
         state.flushTimer = setTimeout(() => {
           state.flushTimer = null;
-          const paths = [...state.pendingPaths];
+          const all = [...state.pendingPaths];
           state.pendingPaths.clear();
+          const now = Date.now();
+          const paths = all.filter((item) => {
+            const until = state.selfWrites.get(item) ?? 0;
+            return until < now;
+          });
+          for (const [item, until] of state.selfWrites) {
+            if (until < now) state.selfWrites.delete(item);
+          }
           state.scan = null;
-          broadcast(state, { type: "fsChange", paths });
+          if (paths.length) broadcast(state, { type: "fsChange", paths });
         }, WATCH_DEBOUNCE_MS);
       });
     } catch {
@@ -655,24 +671,133 @@ function activate(ctx) {
   function lineCount(text) {
     return text.split("\n").length;
   }
-  function baselineSlot(state, rel) {
-    const safe = Buffer.from(`${state.sessionId}::${rel}`).toString("base64url").slice(0, 120);
-    return path3.join(undoDir, `${safe}.baseline.txt`);
+  const HISTORY_MAX_ENTRIES = 30;
+  const HISTORY_MAX_BYTES = 3 * 1024 * 1024;
+  const HISTORY_MAX_SNAPSHOT_BYTES = 512 * 1024;
+  const HISTORY_GAP_SAVE_MS = 45e3;
+  const HISTORY_GAP_OPEN_MS = 5 * 6e4;
+  function historyDirFor(abs) {
+    const hash = crypto.createHash("sha1").update(abs).digest("hex").slice(0, 16);
+    return path3.join(historyRoot, hash);
   }
-  function baselineInfo(state, rel, current) {
-    if (!settings().keepBackups) return { exists: false, lineCount: 0, atBaseline: false };
-    const slot = baselineSlot(state, rel);
-    if (!fs3.existsSync(slot)) return { exists: false, lineCount: 0, atBaseline: false };
-    let stored = "";
+  function snapshotPathFor(dir, id) {
+    return path3.join(dir, `${id}.txt`);
+  }
+  function readHistoryIndex(dir) {
+    const indexFile = path3.join(dir, "index.json");
     try {
-      stored = fs3.readFileSync(slot, "utf8");
+      const parsed = JSON.parse(fs3.readFileSync(indexFile, "utf8"));
+      return { path: parsed.path ?? "", name: parsed.name ?? "", entries: parsed.entries ?? [] };
     } catch {
-      return { exists: false, lineCount: 0, atBaseline: false };
+      return { path: "", name: "", entries: [] };
     }
+  }
+  function writeHistoryIndex(dir, index) {
+    fs3.writeFileSync(path3.join(dir, "index.json"), JSON.stringify(index), "utf8");
+  }
+  function snapshotHistory(abs, content, reason) {
+    if (!settings().keepHistory) return;
+    const bytes = Buffer.byteLength(content, "utf8");
+    if (bytes > HISTORY_MAX_SNAPSHOT_BYTES) return;
+    const dir = historyDirFor(abs);
+    const index = readHistoryIndex(dir);
+    const newest = index.entries[0];
+    if (newest) {
+      try {
+        if (fs3.readFileSync(snapshotPathFor(dir, newest.id), "utf8") === content) return;
+      } catch {
+      }
+      const gap = reason === "open" ? HISTORY_GAP_OPEN_MS : HISTORY_GAP_SAVE_MS;
+      if (Date.now() - newest.at < gap) return;
+    }
+    try {
+      fs3.mkdirSync(dir, { recursive: true });
+      const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+      fs3.writeFileSync(snapshotPathFor(dir, id), content, "utf8");
+      index.path = abs;
+      index.name = path3.basename(abs);
+      index.entries.unshift({ id, at: Date.now(), bytes, lines: lineCount(content), reason });
+      while (index.entries.length > HISTORY_MAX_ENTRIES) {
+        const dropped = index.entries.pop();
+        if (dropped) fs3.rmSync(snapshotPathFor(dir, dropped.id), { force: true });
+      }
+      let total = index.entries.reduce((sum, entry) => sum + entry.bytes, 0);
+      while (index.entries.length > 1 && total > HISTORY_MAX_BYTES) {
+        const dropped = index.entries.pop();
+        if (dropped) {
+          total -= dropped.bytes;
+          fs3.rmSync(snapshotPathFor(dir, dropped.id), { force: true });
+        }
+      }
+      writeHistoryIndex(dir, index);
+    } catch {
+    }
+  }
+  function historyCount(abs) {
+    if (!settings().keepHistory) return 0;
+    return readHistoryIndex(historyDirFor(abs)).entries.length;
+  }
+  function listHistory(abs) {
+    if (!settings().keepHistory) return [];
+    return readHistoryIndex(historyDirFor(abs)).entries;
+  }
+  async function openHistoryDiff(panel, abs, id) {
+    const dir = historyDirFor(abs);
+    const entry = listHistory(abs).find((item) => item.id === id);
+    if (!entry) {
+      await panel.postMessage({ type: "error", message: t("historyGone") });
+      return;
+    }
+    const base = path3.basename(abs);
+    const beforeDir = path3.join(dir, "compare", entry.id, "before");
+    const afterDir = path3.join(dir, "compare", entry.id, "after");
+    const beforePath = path3.join(beforeDir, base);
+    const afterPath = path3.join(afterDir, base);
+    try {
+      fs3.mkdirSync(beforeDir, { recursive: true });
+      fs3.mkdirSync(afterDir, { recursive: true });
+      fs3.copyFileSync(snapshotPathFor(dir, entry.id), beforePath);
+      fs3.copyFileSync(abs, afterPath);
+    } catch {
+      await panel.postMessage({ type: "error", message: t("failed") });
+      return;
+    }
+    await ctx.ui.openDiff({
+      type: "files",
+      leftPath: beforePath,
+      rightPath: afterPath,
+      title: `${base} \xB7 ${formatClock(entry.at)} \u7684\u7248\u672C \u2192 \u5F53\u524D`
+    });
+  }
+  function restoreHistory(state, abs, id) {
+    const dir = historyDirFor(abs);
+    const entry = listHistory(abs).find((item) => item.id === id);
+    if (!entry) return { type: "error", message: t("historyGone") };
+    let content = "";
+    try {
+      content = fs3.readFileSync(snapshotPathFor(dir, entry.id), "utf8");
+    } catch {
+      return { type: "error", message: t("historyGone") };
+    }
+    try {
+      snapshotHistory(abs, fs3.readFileSync(abs, "utf8"), "restore");
+    } catch {
+    }
+    try {
+      markSelfWrite(state, toRel(state.root, abs));
+      fs3.writeFileSync(abs, content, "utf8");
+    } catch {
+      return { type: "error", message: t("failed") };
+    }
+    state.scan = null;
+    const next = fs3.statSync(abs);
     return {
-      exists: true,
-      lineCount: lineCount(stored),
-      atBaseline: stored === current
+      type: "saved",
+      rel: toRel(state.root, abs),
+      reason: "restore",
+      mtimeMs: next.mtimeMs,
+      size: next.size,
+      message: t("historyRestored")
     };
   }
   function openFile(state, rel) {
@@ -703,15 +828,7 @@ function activate(ctx) {
       } catch {
         return { type: "error", message: t("failed") };
       }
-      if (classification.editable && settings().keepBackups) {
-        const slot = baselineSlot(state, toRel(state.root, abs));
-        if (!fs3.existsSync(slot)) {
-          try {
-            fs3.writeFileSync(slot, content);
-          } catch {
-          }
-        }
-      }
+      if (classification.editable) snapshotHistory(abs, content, "open");
       return {
         ...base,
         kind: "text",
@@ -719,7 +836,7 @@ function activate(ctx) {
         editable: classification.editable,
         content,
         lineCount: lineCount(content),
-        baseline: baselineInfo(state, toRel(state.root, abs), content)
+        historyCount: historyCount(abs)
       };
     }
     if (classification.kind === "image") {
@@ -747,6 +864,11 @@ function activate(ctx) {
     const classification = classify(abs, stat.size, MAX_TEXT_BYTES);
     if (!classification.editable) return { type: "error", message: t("denied") };
     try {
+      snapshotHistory(abs, fs3.readFileSync(abs, "utf8"), "save");
+    } catch {
+    }
+    try {
+      markSelfWrite(state, rel);
       fs3.writeFileSync(abs, content, "utf8");
     } catch {
       return { type: "error", message: t("failed") };
@@ -759,34 +881,8 @@ function activate(ctx) {
       reason: "save",
       mtimeMs: next.mtimeMs,
       size: next.size,
-      baseline: baselineInfo(state, rel, content),
+      historyCount: historyCount(abs),
       message: t("saved")
-    };
-  }
-  function revertFile(state, rel) {
-    const abs = resolveInside(state.root, rel);
-    if (!abs) return { type: "error", message: t("denied") };
-    const slot = baselineSlot(state, rel);
-    if (!fs3.existsSync(slot)) return { type: "error", message: t("noBaseline") };
-    try {
-      const stored = fs3.readFileSync(slot, "utf8");
-      const current = fs3.readFileSync(abs, "utf8");
-      fs3.writeFileSync(abs, stored, "utf8");
-      fs3.writeFileSync(slot, current, "utf8");
-    } catch {
-      return { type: "error", message: t("failed") };
-    }
-    state.scan = null;
-    const next = fs3.statSync(abs);
-    const nowAtBaseline = baselineInfo(state, rel, fs3.readFileSync(abs, "utf8"));
-    return {
-      type: "saved",
-      rel,
-      reason: "revert",
-      mtimeMs: next.mtimeMs,
-      size: next.size,
-      baseline: nowAtBaseline,
-      message: nowAtBaseline.atBaseline ? t("reverted") : t("restored")
     };
   }
   function openExternally(state, rel, reveal) {
@@ -885,9 +981,29 @@ function activate(ctx) {
           saveFile(state, String(message.rel ?? ""), String(message.content ?? ""), Number(message.baseMtimeMs ?? 0))
         );
         return;
-      case "revert":
-        await panel.postMessage(revertFile(state, String(message.rel ?? "")));
+      case "history": {
+        const abs = resolveInside(state.root, String(message.rel ?? ""));
+        await panel.postMessage({
+          type: "history",
+          rel: String(message.rel ?? ""),
+          entries: abs ? listHistory(abs).map((entry) => ({ id: entry.id, at: entry.at, bytes: entry.bytes, lines: entry.lines, reason: entry.reason })) : []
+        });
         return;
+      }
+      case "historyDiff": {
+        const abs = resolveInside(state.root, String(message.rel ?? ""));
+        if (abs) await openHistoryDiff(panel, abs, String(message.id ?? ""));
+        return;
+      }
+      case "historyRestore": {
+        const abs = resolveInside(state.root, String(message.rel ?? ""));
+        if (!abs) {
+          await panel.postMessage({ type: "error", message: t("denied") });
+          return;
+        }
+        await panel.postMessage(restoreHistory(state, abs, String(message.id ?? "")));
+        return;
+      }
       case "openExternal":
         await panel.postMessage(openExternally(state, String(message.rel ?? ""), false));
         return;

@@ -63,11 +63,11 @@ function createDemoBridge() {
     wrapLongLines: false,
     showLineNumbers: false,
     externalChange: 'auto',
-    keepBackups: true,
+    keepHistory: true,
   };
-  const DEMO_OVERRIDABLE = ['showHidden', 'textOnly', 'hideIgnoredFolders', 'sortOrder', 'showModTime', 'keepBackups'];
+  const DEMO_OVERRIDABLE = ['showHidden', 'textOnly', 'hideIgnoredFolders', 'sortOrder', 'showModTime', 'keepHistory'];
   const overrides = [];
-  const demoReverted = {};
+  const demoHistory = {};
   const visibleEntries = (rel) => {
     const entries = (tree[rel] ?? []).filter((entry) => {
       if (!demoState.showHidden && entry.name.startsWith('.')) return false;
@@ -122,12 +122,28 @@ function createDemoBridge() {
         reason: 'save',
         mtimeMs: Date.now(),
         size: String(message.content ?? '').length,
-        baseline: {
-          exists: true,
-          lineCount: sample.split('\n').length - 3,
-          atBaseline: Boolean(demoReverted[message.rel]),
-        },
+        historyCount: Math.max(3, (demoHistory[message.rel] ?? []).length),
         message: '已保存',
+      });
+    } else if (message.type === 'history') {
+      const entries = demoHistory[message.rel] ?? [
+        { id: 'h3', at: Date.now() - 90_000, bytes: 512, lines: sample.split('\n').length - 6, reason: 'save' },
+        { id: 'h2', at: Date.now() - 26 * 60_000, bytes: 480, lines: sample.split('\n').length - 12, reason: 'save' },
+        { id: 'h1', at: Date.now() - 3 * 3600_000, bytes: 300, lines: 12, reason: 'open' },
+      ];
+      demoHistory[message.rel] = entries;
+      emit({ type: 'history', rel: message.rel, entries });
+    } else if (message.type === 'historyDiff') {
+      emit({ type: 'toast', message: '演示模式下不打开原生 Diff' });
+    } else if (message.type === 'historyRestore') {
+      emit({
+        type: 'saved',
+        rel: message.rel,
+        reason: 'restore',
+        mtimeMs: Date.now(),
+        size: sample.length,
+        historyCount: (demoHistory[message.rel] ?? []).length,
+        message: '已恢复到这个版本',
       });
     } else if (message.type === 'setSetting') {
       demoState[message.key] = message.value;
@@ -160,27 +176,8 @@ function createDemoBridge() {
         editable: true,
         content: text,
         lineCount: text.split('\n').length,
-        baseline: {
-          exists: name.endsWith('.md'),
-          lineCount: sample.split('\n').length - 3,
-          atBaseline: Boolean(demoReverted[message.rel]),
-        },
+        historyCount: name.endsWith('.md') ? 3 : 0,
         absPath: `/Users/baizhou/Demo/ArrowsPuzzle/${message.rel}`,
-      });
-    } else if (message.type === 'revert') {
-      demoReverted[message.rel] = !demoReverted[message.rel];
-      emit({
-        type: 'saved',
-        rel: message.rel,
-        reason: 'revert',
-        mtimeMs: Date.now(),
-        size: sample.length,
-        baseline: {
-          exists: true,
-          lineCount: sample.split('\n').length - 3,
-          atBaseline: Boolean(demoReverted[message.rel]),
-        },
-        message: demoReverted[message.rel] ? '已恢复到打开时' : '已恢复你的编辑',
       });
     } else if (message.type === 'scan') {
       const all = Object.values(tree).flat();
@@ -256,6 +253,9 @@ const S = {
   autoSaveTimer: null,
   savedFlashTimer: null,
   saveStatus: '',
+  popView: 'settings',
+  history: [],
+  historyRel: '',
 };
 
 const QUICK_SETTINGS = [
@@ -301,6 +301,8 @@ const ui = {
   settingsRows: el('settings-rows'),
   settingsReset: el('settings-reset'),
   fileActions: el('file-actions'),
+  historyView: el('history-view'),
+  popoverFoot: el('popover-foot'),
   saveStatus: el('save-status'),
 };
 
@@ -658,13 +660,28 @@ function openFile(rel) {
 }
 
 function showFile(file) {
+  const previous = S.current;
+  const sameFile = Boolean(previous && previous.rel === file.rel);
+  // Re-opening the file we already have open (a refresh, or an external change we
+  // reloaded) must not yank the view mode or the caret out from under the user.
+  const keepMode = sameFile ? S.mode : null;
+  const caret = sameFile
+    ? { start: ui.editor.selectionStart, end: ui.editor.selectionEnd, top: ui.editor.scrollTop }
+    : null;
+
   S.current = file;
   S.diskConflict = null;
   S.dirty = false;
   resetEmpty();
   ui.editor.value = file.kind === 'text' ? file.content : '';
+  if (caret) {
+    const max = ui.editor.value.length;
+    ui.editor.selectionStart = Math.min(caret.start, max);
+    ui.editor.selectionEnd = Math.min(caret.end, max);
+    ui.editor.scrollTop = caret.top;
+  }
   renderGutter();
-  S.mode = file.flavor === 'markdown' && S.settings.markdownView === 'source' ? 'source' : 'preview';
+  S.mode = keepMode ?? (file.flavor === 'markdown' && S.settings.markdownView === 'source' ? 'source' : 'preview');
   updateModeButton();
 
   if (file.kind === 'image') {
@@ -898,56 +915,109 @@ function flushAutoSave() {
 }
 
 /**
- * The menu row for reverting. It is a two-way switch, and the label says which
- * way it goes plus how much text changes — so pressing it is never a blind,
- * one-way trip into an unknown version.
+ * "This file" group: the version history entry point. Real history rather than a
+ * one-step revert — each entry can be compared in Finch's native diff viewer or
+ * restored (which snapshots the current content first, so it stays reversible).
  */
 function renderFileActions() {
   ui.fileActions.innerHTML = '';
   const file = S.current;
   if (!file || !file.editable) return;
 
-  const baseline = file.baseline ?? { exists: false, lineCount: 0, atBaseline: false };
+  const count = file.historyCount ?? 0;
   const row = document.createElement('div');
-  row.className = 'prow action';
-  // An arrow, not a checkbox — this is an action, not a setting.
+  row.className = `prow action${count ? '' : ' disabled'}`;
   const box = document.createElement('span');
   box.className = 'box action';
-  box.textContent = '↺';
+  box.textContent = '⧉';
   const label = document.createElement('span');
   label.className = 'prow-label';
+  label.textContent = '版本历史';
   const value = document.createElement('span');
   value.className = 'prow-value';
-
-  if (!baseline.exists) {
-    label.textContent = '撤销本次编辑';
-    value.textContent = '无快照';
-    row.classList.add('disabled');
-    row.title = '这个文件没有可恢复的快照';
-  } else if (baseline.atBaseline) {
-    const delta = (ui.editor.value ? ui.editor.value.split('\n').length : 0) - baseline.lineCount;
-    label.textContent = '恢复我的编辑';
-    value.textContent = delta > 0 ? `+${delta} 行` : delta < 0 ? `${delta} 行` : '';
-    row.title = '把你刚才的编辑换回来';
-  } else {
-    const currentLines = S.dirty ? ui.editor.value.split('\n').length : (file.lineCount ?? 0);
-    const delta = baseline.lineCount - currentLines;
-    label.textContent = '撤销本次编辑';
-    value.textContent = delta > 0 ? `+${delta} 行` : delta < 0 ? `${delta} 行` : '';
-    row.title = '恢复到打开这个文件时的内容 —— 再点一次就能换回来';
-  }
-
+  value.textContent = count ? `${count} 个版本` : '无';
   row.append(box, label, value);
-  if (baseline.exists) {
+  row.title = count ? '查看历史版本、对比差异或恢复' : '还没有历史版本（编辑保存后会出现）';
+  if (count) {
     row.addEventListener('click', () => {
-      flushAutoSave();
-      send({ type: 'revert', rel: file.rel });
+      S.historyRel = file.rel;
+      send({ type: 'history', rel: file.rel });
     });
   }
+
   const header = document.createElement('div');
   header.className = 'popover-group';
   header.textContent = '这个文件';
   ui.fileActions.append(header, row);
+}
+
+function setPopoverView(view) {
+  S.popView = view;
+  const history = view === 'history';
+  ui.settingsRows.hidden = history;
+  ui.fileActions.hidden = history;
+  ui.historyView.hidden = !history;
+  ui.popoverFoot.hidden = history;
+  if (history) renderHistoryView();
+}
+
+function renderHistoryView() {
+  ui.historyView.innerHTML = '';
+  const back = document.createElement('div');
+  back.className = 'prow action';
+  const arrow = document.createElement('span');
+  arrow.className = 'box action';
+  arrow.textContent = '‹';
+  const backLabel = document.createElement('span');
+  backLabel.className = 'prow-label';
+  backLabel.textContent = '版本历史';
+  const name = document.createElement('span');
+  name.className = 'prow-value';
+  name.textContent = baseName(S.historyRel ?? '');
+  back.append(arrow, backLabel, name);
+  back.addEventListener('click', () => setPopoverView('settings'));
+  ui.historyView.appendChild(back);
+
+  const entries = S.history ?? [];
+  if (!entries.length) {
+    const empty = document.createElement('div');
+    empty.className = 'popover-group';
+    empty.textContent = '还没有历史版本';
+    ui.historyView.appendChild(empty);
+    return;
+  }
+
+  for (const entry of entries) {
+    const row = document.createElement('div');
+    row.className = 'prow history';
+    const label = document.createElement('span');
+    label.className = 'prow-label';
+    label.textContent = `${fmtTime(entry.at)} · ${entry.lines} 行`;
+    label.title = `${new Date(entry.at).toLocaleString()} 的版本 · 点一下与当前对比`;
+    const restore = document.createElement('button');
+    restore.type = 'button';
+    restore.className = 'prow-btn';
+    restore.textContent = '↺';
+    restore.title = '恢复到这个版本（当前内容会先存入历史，可再撤销）';
+    restore.addEventListener('click', (event) => {
+      event.stopPropagation();
+      flushAutoSave();
+      send({ type: 'historyRestore', rel: S.historyRel, id: entry.id });
+      setPopoverView('settings');
+      toggleSettingsPop(false);
+    });
+    row.append(label, restore);
+    row.addEventListener('click', () => {
+      send({ type: 'historyDiff', rel: S.historyRel, id: entry.id });
+      toggleSettingsPop(false);
+    });
+    ui.historyView.appendChild(row);
+  }
+
+  const hint = document.createElement('div');
+  hint.className = 'popover-group';
+  hint.textContent = '点一行在 Finch 的 Diff 里与当前对比，↺ 恢复到该版本';
+  ui.historyView.appendChild(hint);
 }
 
 function renderGutter() {
@@ -1016,6 +1086,7 @@ function toggleSettingsPop(force) {
   ui.settingsPop.hidden = !open;
   ui.settingsBtn.setAttribute('aria-expanded', String(open));
   if (open) {
+    setPopoverView('settings');
     renderSettingsRows();
     renderFileActions();
   }
@@ -1221,11 +1292,11 @@ function handle(message) {
       if (S.current && S.current.rel === message.rel) {
         S.current.mtimeMs = message.mtimeMs;
         S.current.size = message.size;
-        if (message.baseline) S.current.baseline = message.baseline;
+        if (typeof message.historyCount === 'number') S.current.historyCount = message.historyCount;
         S.dirty = false;
         setSaveStatus('saved');
-        if (message.reason === 'revert') {
-          // The disk now holds the other version — reload it instead of trusting the buffer.
+        if (message.reason === 'restore') {
+          // The disk now holds another version — reload it instead of trusting the buffer.
           send({ type: 'open', rel: message.rel });
         } else {
           S.current.content = ui.editor.value;
@@ -1236,7 +1307,7 @@ function handle(message) {
       }
       S.changed.add(message.rel);
       hideBanner();
-      if (message.reason === 'revert') toast(message.message ?? '已恢复');
+      if (message.reason === 'restore') toast(message.message ?? '已恢复');
       send({ type: 'listDir', rel: '' });
       break;
     }
@@ -1285,6 +1356,12 @@ function handle(message) {
       if (Array.isArray(message.overrides)) S.overrides = message.overrides;
       applySettings();
       if (message.reset) toast('已恢复默认设置');
+      break;
+    }
+    case 'history': {
+      S.history = message.entries ?? [];
+      S.historyRel = message.rel ?? '';
+      setPopoverView('history');
       break;
     }
     case 'toast':

@@ -18110,11 +18110,11 @@ ${text2}</tr>
       wrapLongLines: false,
       showLineNumbers: false,
       externalChange: "auto",
-      keepBackups: true
+      keepHistory: true
     };
-    const DEMO_OVERRIDABLE = ["showHidden", "textOnly", "hideIgnoredFolders", "sortOrder", "showModTime", "keepBackups"];
+    const DEMO_OVERRIDABLE = ["showHidden", "textOnly", "hideIgnoredFolders", "sortOrder", "showModTime", "keepHistory"];
     const overrides = [];
-    const demoReverted = {};
+    const demoHistory = {};
     const visibleEntries = (rel) => {
       const entries2 = (tree[rel] ?? []).filter((entry) => {
         if (!demoState.showHidden && entry.name.startsWith(".")) return false;
@@ -18166,12 +18166,28 @@ ${text2}</tr>
           reason: "save",
           mtimeMs: Date.now(),
           size: String(message.content ?? "").length,
-          baseline: {
-            exists: true,
-            lineCount: sample.split("\n").length - 3,
-            atBaseline: Boolean(demoReverted[message.rel])
-          },
+          historyCount: Math.max(3, (demoHistory[message.rel] ?? []).length),
           message: "\u5DF2\u4FDD\u5B58"
+        });
+      } else if (message.type === "history") {
+        const entries2 = demoHistory[message.rel] ?? [
+          { id: "h3", at: Date.now() - 9e4, bytes: 512, lines: sample.split("\n").length - 6, reason: "save" },
+          { id: "h2", at: Date.now() - 26 * 6e4, bytes: 480, lines: sample.split("\n").length - 12, reason: "save" },
+          { id: "h1", at: Date.now() - 3 * 36e5, bytes: 300, lines: 12, reason: "open" }
+        ];
+        demoHistory[message.rel] = entries2;
+        emit({ type: "history", rel: message.rel, entries: entries2 });
+      } else if (message.type === "historyDiff") {
+        emit({ type: "toast", message: "\u6F14\u793A\u6A21\u5F0F\u4E0B\u4E0D\u6253\u5F00\u539F\u751F Diff" });
+      } else if (message.type === "historyRestore") {
+        emit({
+          type: "saved",
+          rel: message.rel,
+          reason: "restore",
+          mtimeMs: Date.now(),
+          size: sample.length,
+          historyCount: (demoHistory[message.rel] ?? []).length,
+          message: "\u5DF2\u6062\u590D\u5230\u8FD9\u4E2A\u7248\u672C"
         });
       } else if (message.type === "setSetting") {
         demoState[message.key] = message.value;
@@ -18204,27 +18220,8 @@ ${text2}</tr>
           editable: true,
           content: text2,
           lineCount: text2.split("\n").length,
-          baseline: {
-            exists: name.endsWith(".md"),
-            lineCount: sample.split("\n").length - 3,
-            atBaseline: Boolean(demoReverted[message.rel])
-          },
+          historyCount: name.endsWith(".md") ? 3 : 0,
           absPath: `/Users/baizhou/Demo/ArrowsPuzzle/${message.rel}`
-        });
-      } else if (message.type === "revert") {
-        demoReverted[message.rel] = !demoReverted[message.rel];
-        emit({
-          type: "saved",
-          rel: message.rel,
-          reason: "revert",
-          mtimeMs: Date.now(),
-          size: sample.length,
-          baseline: {
-            exists: true,
-            lineCount: sample.split("\n").length - 3,
-            atBaseline: Boolean(demoReverted[message.rel])
-          },
-          message: demoReverted[message.rel] ? "\u5DF2\u6062\u590D\u5230\u6253\u5F00\u65F6" : "\u5DF2\u6062\u590D\u4F60\u7684\u7F16\u8F91"
         });
       } else if (message.type === "scan") {
         const all = Object.values(tree).flat();
@@ -18298,7 +18295,10 @@ ${text2}</tr>
     autoSavePaused: false,
     autoSaveTimer: null,
     savedFlashTimer: null,
-    saveStatus: ""
+    saveStatus: "",
+    popView: "settings",
+    history: [],
+    historyRel: ""
   };
   var QUICK_SETTINGS = [
     { group: "\u663E\u793A\u4E0E\u6392\u5E8F" },
@@ -18341,6 +18341,8 @@ ${text2}</tr>
     settingsRows: el("settings-rows"),
     settingsReset: el("settings-reset"),
     fileActions: el("file-actions"),
+    historyView: el("history-view"),
+    popoverFoot: el("popover-foot"),
     saveStatus: el("save-status")
   };
   function send(message) {
@@ -18648,13 +18650,23 @@ ${text2}</tr>
     renderTree();
   }
   function showFile(file) {
+    const previous = S.current;
+    const sameFile = Boolean(previous && previous.rel === file.rel);
+    const keepMode = sameFile ? S.mode : null;
+    const caret = sameFile ? { start: ui.editor.selectionStart, end: ui.editor.selectionEnd, top: ui.editor.scrollTop } : null;
     S.current = file;
     S.diskConflict = null;
     S.dirty = false;
     resetEmpty();
     ui.editor.value = file.kind === "text" ? file.content : "";
+    if (caret) {
+      const max = ui.editor.value.length;
+      ui.editor.selectionStart = Math.min(caret.start, max);
+      ui.editor.selectionEnd = Math.min(caret.end, max);
+      ui.editor.scrollTop = caret.top;
+    }
     renderGutter();
-    S.mode = file.flavor === "markdown" && S.settings.markdownView === "source" ? "source" : "preview";
+    S.mode = keepMode ?? (file.flavor === "markdown" && S.settings.markdownView === "source" ? "source" : "preview");
     updateModeButton();
     if (file.kind === "image") {
       setPanels({ media: true });
@@ -18856,44 +18868,94 @@ ${text2}</tr>
     ui.fileActions.innerHTML = "";
     const file = S.current;
     if (!file || !file.editable) return;
-    const baseline = file.baseline ?? { exists: false, lineCount: 0, atBaseline: false };
+    const count = file.historyCount ?? 0;
     const row = document.createElement("div");
-    row.className = "prow action";
+    row.className = `prow action${count ? "" : " disabled"}`;
     const box = document.createElement("span");
     box.className = "box action";
-    box.textContent = "\u21BA";
+    box.textContent = "\u29C9";
     const label = document.createElement("span");
     label.className = "prow-label";
+    label.textContent = "\u7248\u672C\u5386\u53F2";
     const value = document.createElement("span");
     value.className = "prow-value";
-    if (!baseline.exists) {
-      label.textContent = "\u64A4\u9500\u672C\u6B21\u7F16\u8F91";
-      value.textContent = "\u65E0\u5FEB\u7167";
-      row.classList.add("disabled");
-      row.title = "\u8FD9\u4E2A\u6587\u4EF6\u6CA1\u6709\u53EF\u6062\u590D\u7684\u5FEB\u7167";
-    } else if (baseline.atBaseline) {
-      const delta = (ui.editor.value ? ui.editor.value.split("\n").length : 0) - baseline.lineCount;
-      label.textContent = "\u6062\u590D\u6211\u7684\u7F16\u8F91";
-      value.textContent = delta > 0 ? `+${delta} \u884C` : delta < 0 ? `${delta} \u884C` : "";
-      row.title = "\u628A\u4F60\u521A\u624D\u7684\u7F16\u8F91\u6362\u56DE\u6765";
-    } else {
-      const currentLines = S.dirty ? ui.editor.value.split("\n").length : file.lineCount ?? 0;
-      const delta = baseline.lineCount - currentLines;
-      label.textContent = "\u64A4\u9500\u672C\u6B21\u7F16\u8F91";
-      value.textContent = delta > 0 ? `+${delta} \u884C` : delta < 0 ? `${delta} \u884C` : "";
-      row.title = "\u6062\u590D\u5230\u6253\u5F00\u8FD9\u4E2A\u6587\u4EF6\u65F6\u7684\u5185\u5BB9 \u2014\u2014 \u518D\u70B9\u4E00\u6B21\u5C31\u80FD\u6362\u56DE\u6765";
-    }
+    value.textContent = count ? `${count} \u4E2A\u7248\u672C` : "\u65E0";
     row.append(box, label, value);
-    if (baseline.exists) {
+    row.title = count ? "\u67E5\u770B\u5386\u53F2\u7248\u672C\u3001\u5BF9\u6BD4\u5DEE\u5F02\u6216\u6062\u590D" : "\u8FD8\u6CA1\u6709\u5386\u53F2\u7248\u672C\uFF08\u7F16\u8F91\u4FDD\u5B58\u540E\u4F1A\u51FA\u73B0\uFF09";
+    if (count) {
       row.addEventListener("click", () => {
-        flushAutoSave();
-        send({ type: "revert", rel: file.rel });
+        S.historyRel = file.rel;
+        send({ type: "history", rel: file.rel });
       });
     }
     const header = document.createElement("div");
     header.className = "popover-group";
     header.textContent = "\u8FD9\u4E2A\u6587\u4EF6";
     ui.fileActions.append(header, row);
+  }
+  function setPopoverView(view) {
+    S.popView = view;
+    const history = view === "history";
+    ui.settingsRows.hidden = history;
+    ui.fileActions.hidden = history;
+    ui.historyView.hidden = !history;
+    ui.popoverFoot.hidden = history;
+    if (history) renderHistoryView();
+  }
+  function renderHistoryView() {
+    ui.historyView.innerHTML = "";
+    const back = document.createElement("div");
+    back.className = "prow action";
+    const arrow = document.createElement("span");
+    arrow.className = "box action";
+    arrow.textContent = "\u2039";
+    const backLabel = document.createElement("span");
+    backLabel.className = "prow-label";
+    backLabel.textContent = "\u7248\u672C\u5386\u53F2";
+    const name = document.createElement("span");
+    name.className = "prow-value";
+    name.textContent = baseName(S.historyRel ?? "");
+    back.append(arrow, backLabel, name);
+    back.addEventListener("click", () => setPopoverView("settings"));
+    ui.historyView.appendChild(back);
+    const entries2 = S.history ?? [];
+    if (!entries2.length) {
+      const empty = document.createElement("div");
+      empty.className = "popover-group";
+      empty.textContent = "\u8FD8\u6CA1\u6709\u5386\u53F2\u7248\u672C";
+      ui.historyView.appendChild(empty);
+      return;
+    }
+    for (const entry of entries2) {
+      const row = document.createElement("div");
+      row.className = "prow history";
+      const label = document.createElement("span");
+      label.className = "prow-label";
+      label.textContent = `${fmtTime(entry.at)} \xB7 ${entry.lines} \u884C`;
+      label.title = `${new Date(entry.at).toLocaleString()} \u7684\u7248\u672C \xB7 \u70B9\u4E00\u4E0B\u4E0E\u5F53\u524D\u5BF9\u6BD4`;
+      const restore = document.createElement("button");
+      restore.type = "button";
+      restore.className = "prow-btn";
+      restore.textContent = "\u21BA";
+      restore.title = "\u6062\u590D\u5230\u8FD9\u4E2A\u7248\u672C\uFF08\u5F53\u524D\u5185\u5BB9\u4F1A\u5148\u5B58\u5165\u5386\u53F2\uFF0C\u53EF\u518D\u64A4\u9500\uFF09";
+      restore.addEventListener("click", (event) => {
+        event.stopPropagation();
+        flushAutoSave();
+        send({ type: "historyRestore", rel: S.historyRel, id: entry.id });
+        setPopoverView("settings");
+        toggleSettingsPop(false);
+      });
+      row.append(label, restore);
+      row.addEventListener("click", () => {
+        send({ type: "historyDiff", rel: S.historyRel, id: entry.id });
+        toggleSettingsPop(false);
+      });
+      ui.historyView.appendChild(row);
+    }
+    const hint = document.createElement("div");
+    hint.className = "popover-group";
+    hint.textContent = "\u70B9\u4E00\u884C\u5728 Finch \u7684 Diff \u91CC\u4E0E\u5F53\u524D\u5BF9\u6BD4\uFF0C\u21BA \u6062\u590D\u5230\u8BE5\u7248\u672C";
+    ui.historyView.appendChild(hint);
   }
   function renderGutter() {
     if (ui.gutter.hidden) return;
@@ -18952,6 +19014,7 @@ ${text2}</tr>
     ui.settingsPop.hidden = !open;
     ui.settingsBtn.setAttribute("aria-expanded", String(open));
     if (open) {
+      setPopoverView("settings");
       renderSettingsRows();
       renderFileActions();
     }
@@ -19137,10 +19200,10 @@ ${text2}</tr>
         if (S.current && S.current.rel === message.rel) {
           S.current.mtimeMs = message.mtimeMs;
           S.current.size = message.size;
-          if (message.baseline) S.current.baseline = message.baseline;
+          if (typeof message.historyCount === "number") S.current.historyCount = message.historyCount;
           S.dirty = false;
           setSaveStatus("saved");
-          if (message.reason === "revert") {
+          if (message.reason === "restore") {
             send({ type: "open", rel: message.rel });
           } else {
             S.current.content = ui.editor.value;
@@ -19151,7 +19214,7 @@ ${text2}</tr>
         }
         S.changed.add(message.rel);
         hideBanner();
-        if (message.reason === "revert") toast(message.message ?? "\u5DF2\u6062\u590D");
+        if (message.reason === "restore") toast(message.message ?? "\u5DF2\u6062\u590D");
         send({ type: "listDir", rel: "" });
         break;
       }
@@ -19200,6 +19263,12 @@ ${text2}</tr>
         if (Array.isArray(message.overrides)) S.overrides = message.overrides;
         applySettings();
         if (message.reset) toast("\u5DF2\u6062\u590D\u9ED8\u8BA4\u8BBE\u7F6E");
+        break;
+      }
+      case "history": {
+        S.history = message.entries ?? [];
+        S.historyRel = message.rel ?? "";
+        setPopoverView("history");
         break;
       }
       case "toast":

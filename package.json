@@ -183,10 +183,10 @@
           "default": "auto"
         },
         {
-          "key": "keepBackups",
+          "key": "keepHistory",
           "type": "boolean",
-          "label": "Keep a snapshot of files as you opened them",
-          "description": "Enables \"Revert my edits\" in the panel menu, which restores a file to how it looked when this session first opened it — and can be pressed again to bring your edits back. Turn off to stop using that storage.",
+          "label": "Keep a local version history",
+          "description": "Snapshots files this mini tool edits, so you can list earlier versions, compare them in Finch's diff viewer, and restore one. Stored in the mini tool's private storage.",
           "default": true
         }
       ]

@@ -1,5 +1,6 @@
 import type * as finch from 'finch';
 import { execFile } from 'node:child_process';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import {
@@ -19,6 +20,8 @@ const MAX_TEXT_BYTES = 2 * 1024 * 1024;
 const SCAN_TTL_MS = 4000;
 const TOUCHED_TTL_MS = 3000;
 const WATCH_DEBOUNCE_MS = 350;
+/** How long a write of our own keeps the watcher from echoing it back at us. */
+const SELF_WRITE_GRACE_MS = 4000;
 
 export interface ResolvedSettings {
   showHidden: boolean;
@@ -34,7 +37,7 @@ export interface ResolvedSettings {
   wrapLongLines: boolean;
   showLineNumbers: boolean;
   externalChange: 'auto' | 'ask';
-  keepBackups: boolean;
+  keepHistory: boolean;
 }
 
 /**
@@ -56,8 +59,14 @@ const SETTING_DEFAULTS: ResolvedSettings = {
   wrapLongLines: false,
   showLineNumbers: false,
   externalChange: 'auto',
-  keepBackups: true,
+  keepHistory: true,
 };
+
+/** HH:MM, for labelling history entries. */
+function formatClock(ms: number): string {
+  const date = new Date(ms);
+  return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+}
 
 type SettingsKey = keyof typeof SETTING_DEFAULTS;
 
@@ -92,9 +101,8 @@ const TEXT = {
     tooLarge: '文件太大，已交给系统程序打开',
     conflict: '文件已被其他程序修改',
     saved: '已保存',
-    reverted: '已恢复到打开时',
-    restored: '已恢复你的编辑',
-    noBaseline: '这个文件没有可恢复的备份',
+    historyGone: '这个版本已经不在了',
+    historyRestored: '已恢复到这个版本',
     failed: '操作失败',
     externalOpened: '已用系统程序打开',
   },
@@ -105,9 +113,8 @@ const TEXT = {
     tooLarge: 'File is too large — opened with the system app instead',
     conflict: 'The file changed on disk',
     saved: 'Saved',
-    reverted: 'Reverted to how it was when you opened it',
-    restored: 'Your edits are back',
-    noBaseline: 'No snapshot for this file',
+    historyGone: 'That version is gone',
+    historyRestored: 'Restored that version',
     failed: 'Something went wrong',
     externalOpened: 'Opened with the system app',
   },
@@ -130,6 +137,8 @@ interface SessionState {
   scan: ScanCache | null;
   watcher: fs.FSWatcher | null;
   pendingPaths: Set<string>;
+  /** rel → epoch ms until which watcher noise from our own writes is ignored. */
+  selfWrites: Map<string, number>;
   flushTimer: NodeJS.Timeout | null;
   panels: Set<finch.AppPanel>;
 }
@@ -137,9 +146,9 @@ interface SessionState {
 export function activate(ctx: finch.MiniToolContext): void {
   const storageRoot = ctx.storagePath;
   const dataRoot = findFinchDataRoot(storageRoot);
-  const undoDir = path.join(storageRoot, 'undo');
+  const historyRoot = path.join(storageRoot, 'history');
   try {
-    fs.mkdirSync(undoDir, { recursive: true });
+    fs.mkdirSync(historyRoot, { recursive: true });
   } catch {
     /* best effort */
   }
@@ -282,6 +291,7 @@ export function activate(ctx: finch.MiniToolContext): void {
       scan: null,
       watcher: null,
       pendingPaths: new Set(),
+      selfWrites: new Map(),
       flushTimer: null,
       panels: new Set(),
     };
@@ -349,6 +359,11 @@ export function activate(ctx: finch.MiniToolContext): void {
     }
   }
 
+  /** Remember that we are about to write `rel`, so the watcher stays quiet about it. */
+  function markSelfWrite(state: SessionState, rel: string): void {
+    state.selfWrites.set(rel, Date.now() + SELF_WRITE_GRACE_MS);
+  }
+
   function ensureWatcher(state: SessionState): void {
     if (state.watcher) return;
     try {
@@ -361,10 +376,20 @@ export function activate(ctx: finch.MiniToolContext): void {
         if (state.flushTimer) clearTimeout(state.flushTimer);
         state.flushTimer = setTimeout(() => {
           state.flushTimer = null;
-          const paths = [...state.pendingPaths];
+          const all = [...state.pendingPaths];
           state.pendingPaths.clear();
+          // Drop paths this mini tool wrote itself: echoing them back would make the
+          // panel re-open the file it just saved, resetting the view and the caret.
+          const now = Date.now();
+          const paths = all.filter((item) => {
+            const until = state.selfWrites.get(item) ?? 0;
+            return until < now;
+          });
+          for (const [item, until] of state.selfWrites) {
+            if (until < now) state.selfWrites.delete(item);
+          }
           state.scan = null;
-          broadcast(state, { type: 'fsChange', paths });
+          if (paths.length) broadcast(state, { type: 'fsChange', paths });
         }, WATCH_DEBOUNCE_MS);
       });
     } catch {
@@ -396,31 +421,168 @@ export function activate(ctx: finch.MiniToolContext): void {
     return text.split('\n').length;
   }
 
-  /**
-   * The revert baseline is the file's content the first time this session opened
-   * it — not "the previous save". Under auto-save a previous-save snapshot is
-   * only a second old and therefore worthless; a baseline lets someone undo one
-   * whole editing session, and it can be exchanged back for a real two-way undo.
+  /* ── file version history ──────────────────────────────────────────────────
+   * A small local history per file, kept in the mini tool's private storage.
+   * Snapshots hold the content that was on disk *before* a change, so the list
+   * reads as "what this file used to look like". Comparing opens Finch's own
+   * native diff viewer — the mini tool never re-implements a diff UI.
    */
-  function baselineSlot(state: SessionState, rel: string): string {
-    const safe = Buffer.from(`${state.sessionId}::${rel}`).toString('base64url').slice(0, 120);
-    return path.join(undoDir, `${safe}.baseline.txt`);
+
+  const HISTORY_MAX_ENTRIES = 30;
+  const HISTORY_MAX_BYTES = 3 * 1024 * 1024;
+  const HISTORY_MAX_SNAPSHOT_BYTES = 512 * 1024;
+  const HISTORY_GAP_SAVE_MS = 45_000;
+  const HISTORY_GAP_OPEN_MS = 5 * 60_000;
+
+  interface HistoryEntry {
+    id: string;
+    at: number;
+    bytes: number;
+    lines: number;
+    reason: 'open' | 'save' | 'restore';
   }
 
-  function baselineInfo(state: SessionState, rel: string, current: string) {
-    if (!settings().keepBackups) return { exists: false, lineCount: 0, atBaseline: false };
-    const slot = baselineSlot(state, rel);
-    if (!fs.existsSync(slot)) return { exists: false, lineCount: 0, atBaseline: false };
-    let stored = '';
+  function historyDirFor(abs: string): string {
+    const hash = crypto.createHash('sha1').update(abs).digest('hex').slice(0, 16);
+    return path.join(historyRoot, hash);
+  }
+
+  function snapshotPathFor(dir: string, id: string): string {
+    return path.join(dir, `${id}.txt`);
+  }
+
+  function readHistoryIndex(dir: string): { path: string; name: string; entries: HistoryEntry[] } {
+    const indexFile = path.join(dir, 'index.json');
     try {
-      stored = fs.readFileSync(slot, 'utf8');
+      const parsed = JSON.parse(fs.readFileSync(indexFile, 'utf8')) as {
+        path?: string;
+        name?: string;
+        entries?: HistoryEntry[];
+      };
+      return { path: parsed.path ?? '', name: parsed.name ?? '', entries: parsed.entries ?? [] };
     } catch {
-      return { exists: false, lineCount: 0, atBaseline: false };
+      return { path: '', name: '', entries: [] };
     }
+  }
+
+  function writeHistoryIndex(dir: string, index: { path: string; name: string; entries: HistoryEntry[] }): void {
+    fs.writeFileSync(path.join(dir, 'index.json'), JSON.stringify(index), 'utf8');
+  }
+
+  function snapshotHistory(abs: string, content: string, reason: HistoryEntry['reason']): void {
+    if (!settings().keepHistory) return;
+    const bytes = Buffer.byteLength(content, 'utf8');
+    if (bytes > HISTORY_MAX_SNAPSHOT_BYTES) return;
+
+    const dir = historyDirFor(abs);
+    const index = readHistoryIndex(dir);
+    const newest = index.entries[0];
+    if (newest) {
+      try {
+        if (fs.readFileSync(snapshotPathFor(dir, newest.id), 'utf8') === content) return;
+      } catch {
+        /* fall through and take a fresh snapshot */
+      }
+      const gap = reason === 'open' ? HISTORY_GAP_OPEN_MS : HISTORY_GAP_SAVE_MS;
+      if (Date.now() - newest.at < gap) return;
+    }
+
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+      const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+      fs.writeFileSync(snapshotPathFor(dir, id), content, 'utf8');
+      index.path = abs;
+      index.name = path.basename(abs);
+      index.entries.unshift({ id, at: Date.now(), bytes, lines: lineCount(content), reason });
+      while (index.entries.length > HISTORY_MAX_ENTRIES) {
+        const dropped = index.entries.pop();
+        if (dropped) fs.rmSync(snapshotPathFor(dir, dropped.id), { force: true });
+      }
+      let total = index.entries.reduce((sum, entry) => sum + entry.bytes, 0);
+      while (index.entries.length > 1 && total > HISTORY_MAX_BYTES) {
+        const dropped = index.entries.pop();
+        if (dropped) {
+          total -= dropped.bytes;
+          fs.rmSync(snapshotPathFor(dir, dropped.id), { force: true });
+        }
+      }
+      writeHistoryIndex(dir, index);
+    } catch {
+      /* history is best effort — never block a save on it */
+    }
+  }
+
+  function historyCount(abs: string): number {
+    if (!settings().keepHistory) return 0;
+    return readHistoryIndex(historyDirFor(abs)).entries.length;
+  }
+
+  function listHistory(abs: string): HistoryEntry[] {
+    if (!settings().keepHistory) return [];
+    return readHistoryIndex(historyDirFor(abs)).entries;
+  }
+
+  /** Materialize both sides under the same basename so the native diff reads cleanly. */
+  async function openHistoryDiff(panel: finch.AppPanel, abs: string, id: string): Promise<void> {
+    const dir = historyDirFor(abs);
+    const entry = listHistory(abs).find((item) => item.id === id);
+    if (!entry) {
+      await panel.postMessage({ type: 'error', message: t('historyGone') });
+      return;
+    }
+    const base = path.basename(abs);
+    const beforeDir = path.join(dir, 'compare', entry.id, 'before');
+    const afterDir = path.join(dir, 'compare', entry.id, 'after');
+    const beforePath = path.join(beforeDir, base);
+    const afterPath = path.join(afterDir, base);
+    try {
+      fs.mkdirSync(beforeDir, { recursive: true });
+      fs.mkdirSync(afterDir, { recursive: true });
+      fs.copyFileSync(snapshotPathFor(dir, entry.id), beforePath);
+      fs.copyFileSync(abs, afterPath);
+    } catch {
+      await panel.postMessage({ type: 'error', message: t('failed') });
+      return;
+    }
+    await ctx.ui.openDiff({
+      type: 'files',
+      leftPath: beforePath,
+      rightPath: afterPath,
+      title: `${base} · ${formatClock(entry.at)} 的版本 → 当前`,
+    });
+  }
+
+  function restoreHistory(state: SessionState, abs: string, id: string) {
+    const dir = historyDirFor(abs);
+    const entry = listHistory(abs).find((item) => item.id === id);
+    if (!entry) return { type: 'error', message: t('historyGone') };
+    let content = '';
+    try {
+      content = fs.readFileSync(snapshotPathFor(dir, entry.id), 'utf8');
+    } catch {
+      return { type: 'error', message: t('historyGone') };
+    }
+    // Keep what is on disk right now, so restoring is itself reversible.
+    try {
+      snapshotHistory(abs, fs.readFileSync(abs, 'utf8'), 'restore');
+    } catch {
+      /* best effort */
+    }
+    try {
+      markSelfWrite(state, toRel(state.root, abs));
+      fs.writeFileSync(abs, content, 'utf8');
+    } catch {
+      return { type: 'error', message: t('failed') };
+    }
+    state.scan = null;
+    const next = fs.statSync(abs);
     return {
-      exists: true,
-      lineCount: lineCount(stored),
-      atBaseline: stored === current,
+      type: 'saved',
+      rel: toRel(state.root, abs),
+      reason: 'restore',
+      mtimeMs: next.mtimeMs,
+      size: next.size,
+      message: t('historyRestored'),
     };
   }
 
@@ -454,16 +616,7 @@ export function activate(ctx: finch.MiniToolContext): void {
       } catch {
         return { type: 'error', message: t('failed') };
       }
-      if (classification.editable && settings().keepBackups) {
-        const slot = baselineSlot(state, toRel(state.root, abs));
-        if (!fs.existsSync(slot)) {
-          try {
-            fs.writeFileSync(slot, content);
-          } catch {
-            /* baseline is best effort */
-          }
-        }
-      }
+      if (classification.editable) snapshotHistory(abs, content, 'open');
       return {
         ...base,
         kind: 'text',
@@ -471,7 +624,7 @@ export function activate(ctx: finch.MiniToolContext): void {
         editable: classification.editable,
         content,
         lineCount: lineCount(content),
-        baseline: baselineInfo(state, toRel(state.root, abs), content),
+        historyCount: historyCount(abs),
       };
     }
     if (classification.kind === 'image') {
@@ -501,6 +654,14 @@ export function activate(ctx: finch.MiniToolContext): void {
     if (!classification.editable) return { type: 'error', message: t('denied') };
 
     try {
+      // Keep what is being replaced, so the history is a record of past states.
+      snapshotHistory(abs, fs.readFileSync(abs, 'utf8'), 'save');
+    } catch {
+      /* best effort */
+    }
+
+    try {
+      markSelfWrite(state, rel);
       fs.writeFileSync(abs, content, 'utf8');
     } catch {
       return { type: 'error', message: t('failed') };
@@ -513,39 +674,8 @@ export function activate(ctx: finch.MiniToolContext): void {
       reason: 'save',
       mtimeMs: next.mtimeMs,
       size: next.size,
-      baseline: baselineInfo(state, rel, content),
+      historyCount: historyCount(abs),
       message: t('saved'),
-    };
-  }
-
-  /**
-   * Two-way revert: swap the file with its baseline snapshot. Pressing it again
-   * puts your edits back, so this is never a one-way trip into an unknown state.
-   */
-  function revertFile(state: SessionState, rel: string) {
-    const abs = resolveInside(state.root, rel);
-    if (!abs) return { type: 'error', message: t('denied') };
-    const slot = baselineSlot(state, rel);
-    if (!fs.existsSync(slot)) return { type: 'error', message: t('noBaseline') };
-    try {
-      const stored = fs.readFileSync(slot, 'utf8');
-      const current = fs.readFileSync(abs, 'utf8');
-      fs.writeFileSync(abs, stored, 'utf8');
-      fs.writeFileSync(slot, current, 'utf8');
-    } catch {
-      return { type: 'error', message: t('failed') };
-    }
-    state.scan = null;
-    const next = fs.statSync(abs);
-    const nowAtBaseline = baselineInfo(state, rel, fs.readFileSync(abs, 'utf8'));
-    return {
-      type: 'saved',
-      rel,
-      reason: 'revert',
-      mtimeMs: next.mtimeMs,
-      size: next.size,
-      baseline: nowAtBaseline,
-      message: nowAtBaseline.atBaseline ? t('reverted') : t('restored'),
     };
   }
 
@@ -656,9 +786,29 @@ export function activate(ctx: finch.MiniToolContext): void {
           saveFile(state, String(message.rel ?? ''), String(message.content ?? ''), Number(message.baseMtimeMs ?? 0)),
         );
         return;
-      case 'revert':
-        await panel.postMessage(revertFile(state, String(message.rel ?? '')));
+      case 'history': {
+        const abs = resolveInside(state.root, String(message.rel ?? ''));
+        await panel.postMessage({
+          type: 'history',
+          rel: String(message.rel ?? ''),
+          entries: abs ? listHistory(abs).map((entry) => ({ id: entry.id, at: entry.at, bytes: entry.bytes, lines: entry.lines, reason: entry.reason })) : [],
+        });
         return;
+      }
+      case 'historyDiff': {
+        const abs = resolveInside(state.root, String(message.rel ?? ''));
+        if (abs) await openHistoryDiff(panel, abs, String(message.id ?? ''));
+        return;
+      }
+      case 'historyRestore': {
+        const abs = resolveInside(state.root, String(message.rel ?? ''));
+        if (!abs) {
+          await panel.postMessage({ type: 'error', message: t('denied') });
+          return;
+        }
+        await panel.postMessage(restoreHistory(state, abs, String(message.id ?? '')));
+        return;
+      }
       case 'openExternal':
         await panel.postMessage(openExternally(state, String(message.rel ?? ''), false));
         return;
