@@ -177,6 +177,26 @@ npm run icon        # 重新生成 icon.png
 
 调试页面本身很方便：`dist/panel.html` 在没有 `window.finch` 时（例如直接用浏览器打开）会退回到一份内置演示数据，可以单纯调样式；在 Finch 里永远走真实 Bridge。
 
+### 发布节奏
+
+**按「用户能感知的里程碑」发，不按提交发。** 触发条件三条：
+
+1. 攒成了一个能一句话讲清楚的主题（见 [CHANGELOG](CHANGELOG.md)）
+2. 有人报了 bug —— 修复要尽快发出去
+3. 需要更新社区目录里登记的版本号
+
+理由是：对一个还没有多少用户的小工具，频繁发版不产生价值，而每次发布都要过一次 npm 的浏览器授权（这个账号没有常驻 token）。攒着发的唯一风险是改动故事丢失，所以每个版本在 `CHANGELOG.md` 里写清**为什么改**，而不只是改了什么。
+
+版本号遵循 SemVer：1.0 之前，**行为变化算 minor，修复算 patch**。
+
+```bash
+# 一次发布
+npm version minor --no-git-tag-version   # 或 patch
+# 更新 CHANGELOG.md
+npm run build && git add -A && git commit && git tag -a vX.Y.Z -m "..." && git push --follow-tags
+npm publish                              # prepublishOnly 会跑 typecheck + build + doctor
+```
+
 ## 已知边界
 
 - 对话正文里出现的文件路径**不会**变成可点击链接 —— 时间线由 Finch 主程序渲染，小程序 API 没有注入入口。本工具的替代方案是「本会话」标签页 + 右键「插入到对话」。

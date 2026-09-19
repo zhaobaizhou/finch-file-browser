@@ -2,6 +2,7 @@
 import { execFile } from "node:child_process";
 import crypto from "node:crypto";
 import fs3 from "node:fs";
+import os2 from "node:os";
 import path3 from "node:path";
 
 // src/paths.ts
@@ -437,6 +438,24 @@ var TEXT = {
     saved: "\u5DF2\u4FDD\u5B58",
     historyGone: "\u8FD9\u4E2A\u7248\u672C\u5DF2\u7ECF\u4E0D\u5728\u4E86",
     historyRestored: "\u5DF2\u6062\u590D\u5230\u8FD9\u4E2A\u7248\u672C",
+    newFile: "\u65B0\u5EFA\u6587\u4EF6",
+    newFolder: "\u65B0\u5EFA\u6587\u4EF6\u5939",
+    nameLabel: "\u540D\u79F0",
+    namePlaceholderFile: "\u4F8B\u5982\uFF1A\u7B14\u8BB0.md",
+    namePlaceholderFolder: "\u6587\u4EF6\u5939\u540D\u79F0",
+    createAction: "\u521B\u5EFA",
+    renameAction: "\u91CD\u547D\u540D",
+    cancelAction: "\u53D6\u6D88",
+    inFolder: "\u4F4D\u7F6E",
+    invalidName: "\u540D\u79F0\u4E0D\u5408\u6CD5\uFF1A\u4E0D\u80FD\u4E3A\u7A7A\uFF0C\u4E5F\u4E0D\u80FD\u5305\u542B / \u6216 \\",
+    nameExists: "\u8FD9\u91CC\u5DF2\u7ECF\u6709\u540C\u540D\u7684\u6587\u4EF6\u6216\u6587\u4EF6\u5939\u4E86",
+    created: "\u5DF2\u521B\u5EFA",
+    renamed: "\u5DF2\u91CD\u547D\u540D",
+    trashTitle: "\u79FB\u5230\u5E9F\u7EB8\u7BD3\uFF1F",
+    trashBody: "\u6587\u4EF6\u4F1A\u8FDB\u5165\u7CFB\u7EDF\u5E9F\u7EB8\u7BD3\uFF0C\u968F\u65F6\u53EF\u4EE5\u6062\u590D\u3002",
+    trashAction: "\u79FB\u5230\u5E9F\u7EB8\u7BD3",
+    trashed: "\u5DF2\u79FB\u5230\u5E9F\u7EB8\u7BD3",
+    trashFailed: "\u79FB\u5165\u5E9F\u7EB8\u7BD3\u5931\u8D25\uFF0C\u672A\u505A\u4EFB\u4F55\u6539\u52A8",
     failed: "\u64CD\u4F5C\u5931\u8D25",
     externalOpened: "\u5DF2\u7528\u7CFB\u7EDF\u7A0B\u5E8F\u6253\u5F00"
   },
@@ -449,6 +468,24 @@ var TEXT = {
     saved: "Saved",
     historyGone: "That version is gone",
     historyRestored: "Restored that version",
+    newFile: "New file",
+    newFolder: "New folder",
+    nameLabel: "Name",
+    namePlaceholderFile: "e.g. notes.md",
+    namePlaceholderFolder: "Folder name",
+    createAction: "Create",
+    renameAction: "Rename",
+    cancelAction: "Cancel",
+    inFolder: "In",
+    invalidName: "That name is not valid: it cannot be empty or contain / or \\",
+    nameExists: "Something with that name is already here",
+    created: "Created",
+    renamed: "Renamed",
+    trashTitle: "Move to Trash?",
+    trashBody: "It goes to the system Trash and can be recovered from there.",
+    trashAction: "Move to Trash",
+    trashed: "Moved to Trash",
+    trashFailed: "Could not move it to the Trash \u2014 nothing was changed",
     failed: "Something went wrong",
     externalOpened: "Opened with the system app"
   }
@@ -885,6 +922,145 @@ function activate(ctx) {
       message: t("saved")
     };
   }
+  const INVALID_NAME_CHARS = /[/\\\u0000]/;
+  function validateEntryName(raw) {
+    const name = String(raw ?? "").trim();
+    if (!name || name === "." || name === ".." || INVALID_NAME_CHARS.test(name)) return null;
+    return name;
+  }
+  async function createEntry(state, dirRel, kind) {
+    const dirAbs = resolveInside(state.root, dirRel);
+    if (!dirAbs) return { type: "error", message: t("denied") };
+    const result = await ctx.ui.showModalDialog({
+      title: kind === "folder" ? t("newFolder") : t("newFile"),
+      description: `${t("inFolder")}: ${dirRel || "."}`,
+      fields: [
+        {
+          key: "name",
+          label: t("nameLabel"),
+          type: "text",
+          required: true,
+          placeholder: kind === "folder" ? t("namePlaceholderFolder") : t("namePlaceholderFile")
+        }
+      ],
+      actions: [
+        { id: "cancel", label: t("cancelAction") },
+        { id: "create", label: t("createAction"), variant: "primary" }
+      ]
+    });
+    if (result.action !== "create") return null;
+    const name = validateEntryName(result.values?.name);
+    if (!name) return { type: "error", message: t("invalidName") };
+    const abs = path3.join(dirAbs, name);
+    if (fs3.existsSync(abs)) return { type: "error", message: t("nameExists") };
+    try {
+      markSelfWrite(state, toRel(state.root, abs));
+      if (kind === "folder") fs3.mkdirSync(abs);
+      else fs3.writeFileSync(abs, "", "utf8");
+    } catch {
+      return { type: "error", message: t("failed") };
+    }
+    state.scan = null;
+    const rel = toRel(state.root, abs);
+    return {
+      type: "treeChanged",
+      dir: dirRel,
+      created: kind === "file" ? rel : void 0,
+      message: `${t("created")} \xB7 ${rel}`
+    };
+  }
+  async function renameEntry(state, rel) {
+    const abs = resolveInside(state.root, rel);
+    if (!abs || abs === state.root) return { type: "error", message: t("denied") };
+    if (!fs3.existsSync(abs)) return { type: "error", message: t("notFound") };
+    const parentRel = toRel(state.root, path3.dirname(abs));
+    const current = path3.basename(abs);
+    const result = await ctx.ui.showModalDialog({
+      title: t("renameAction"),
+      description: rel,
+      fields: [{ key: "name", label: t("nameLabel"), type: "text", required: true, default: current }],
+      actions: [
+        { id: "cancel", label: t("cancelAction") },
+        { id: "rename", label: t("renameAction"), variant: "primary" }
+      ]
+    });
+    if (result.action !== "rename") return null;
+    const name = validateEntryName(result.values?.name);
+    if (!name) return { type: "error", message: t("invalidName") };
+    if (name === current) return null;
+    const target = path3.join(path3.dirname(abs), name);
+    if (fs3.existsSync(target)) return { type: "error", message: t("nameExists") };
+    try {
+      fs3.renameSync(abs, target);
+    } catch {
+      return { type: "error", message: t("failed") };
+    }
+    state.scan = null;
+    return {
+      type: "treeChanged",
+      dir: parentRel,
+      renamed: { from: rel, to: toRel(state.root, target) },
+      message: `${t("renamed")} \xB7 ${name}`
+    };
+  }
+  function renameIntoTrash(abs, trashDir) {
+    try {
+      fs3.mkdirSync(trashDir, { recursive: true });
+      let target = path3.join(trashDir, path3.basename(abs));
+      if (fs3.existsSync(target)) target = `${target}.${Date.now()}`;
+      fs3.renameSync(abs, target);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  function runQuiet(command, args) {
+    return new Promise((resolve) => {
+      try {
+        execFile(command, args, (error) => resolve(!error));
+      } catch {
+        resolve(false);
+      }
+    });
+  }
+  async function trashEntry(state, rel) {
+    const abs = resolveInside(state.root, rel);
+    if (!abs || abs === state.root) return { type: "error", message: t("denied") };
+    if (!fs3.existsSync(abs)) return { type: "error", message: t("notFound") };
+    const confirmed = await ctx.ui.showConfirmDialog({
+      title: t("trashTitle"),
+      description: rel,
+      message: t("trashBody"),
+      confirmLabel: t("trashAction"),
+      cancelLabel: t("cancelAction"),
+      variant: "danger"
+    });
+    if (!confirmed.confirmed) return null;
+    let ok = false;
+    const platform = process.platform;
+    if (platform === "darwin") {
+      ok = await runQuiet("osascript", ["-e", `tell application "Finder" to delete (POSIX file ${JSON.stringify(abs)})`]);
+      if (!ok) ok = renameIntoTrash(abs, path3.join(os2.homedir(), ".Trash"));
+    } else if (platform === "linux") {
+      ok = await runQuiet("gio", ["trash", abs]);
+      if (!ok) ok = renameIntoTrash(abs, path3.join(os2.homedir(), ".local", "share", "Trash", "files"));
+    } else if (platform === "win32") {
+      const escaped = abs.replace(/'/g, "''");
+      ok = await runQuiet("powershell", [
+        "-NoProfile",
+        "-Command",
+        `Add-Type -AssemblyName Microsoft.VisualBasic; [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile('${escaped}','OnlyErrorDialogs','SendToRecycleBin')`
+      ]);
+    }
+    if (!ok || fs3.existsSync(abs)) return { type: "error", message: t("trashFailed") };
+    state.scan = null;
+    return {
+      type: "treeChanged",
+      dir: toRel(state.root, path3.dirname(abs)),
+      removed: rel,
+      message: `${t("trashed")} \xB7 ${path3.basename(abs)}`
+    };
+  }
   function openExternally(state, rel, reveal) {
     const abs = resolveInside(state.root, rel);
     if (!abs) return { type: "error", message: t("denied") };
@@ -1002,6 +1178,26 @@ function activate(ctx) {
           return;
         }
         await panel.postMessage(restoreHistory(state, abs, String(message.id ?? "")));
+        return;
+      }
+      case "newFile": {
+        const reply = await createEntry(state, String(message.dir ?? ""), "file");
+        if (reply) await panel.postMessage(reply);
+        return;
+      }
+      case "newFolder": {
+        const reply = await createEntry(state, String(message.dir ?? ""), "folder");
+        if (reply) await panel.postMessage(reply);
+        return;
+      }
+      case "rename": {
+        const reply = await renameEntry(state, String(message.rel ?? ""));
+        if (reply) await panel.postMessage(reply);
+        return;
+      }
+      case "trash": {
+        const reply = await trashEntry(state, String(message.rel ?? ""));
+        if (reply) await panel.postMessage(reply);
         return;
       }
       case "openExternal":

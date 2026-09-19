@@ -2,6 +2,7 @@ import type * as finch from 'finch';
 import { execFile } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import {
   classify,
@@ -103,6 +104,24 @@ const TEXT = {
     saved: '已保存',
     historyGone: '这个版本已经不在了',
     historyRestored: '已恢复到这个版本',
+    newFile: '新建文件',
+    newFolder: '新建文件夹',
+    nameLabel: '名称',
+    namePlaceholderFile: '例如：笔记.md',
+    namePlaceholderFolder: '文件夹名称',
+    createAction: '创建',
+    renameAction: '重命名',
+    cancelAction: '取消',
+    inFolder: '位置',
+    invalidName: '名称不合法：不能为空，也不能包含 / 或 \\',
+    nameExists: '这里已经有同名的文件或文件夹了',
+    created: '已创建',
+    renamed: '已重命名',
+    trashTitle: '移到废纸篓？',
+    trashBody: '文件会进入系统废纸篓，随时可以恢复。',
+    trashAction: '移到废纸篓',
+    trashed: '已移到废纸篓',
+    trashFailed: '移入废纸篓失败，未做任何改动',
     failed: '操作失败',
     externalOpened: '已用系统程序打开',
   },
@@ -115,6 +134,24 @@ const TEXT = {
     saved: 'Saved',
     historyGone: 'That version is gone',
     historyRestored: 'Restored that version',
+    newFile: 'New file',
+    newFolder: 'New folder',
+    nameLabel: 'Name',
+    namePlaceholderFile: 'e.g. notes.md',
+    namePlaceholderFolder: 'Folder name',
+    createAction: 'Create',
+    renameAction: 'Rename',
+    cancelAction: 'Cancel',
+    inFolder: 'In',
+    invalidName: 'That name is not valid: it cannot be empty or contain / or \\',
+    nameExists: 'Something with that name is already here',
+    created: 'Created',
+    renamed: 'Renamed',
+    trashTitle: 'Move to Trash?',
+    trashBody: 'It goes to the system Trash and can be recovered from there.',
+    trashAction: 'Move to Trash',
+    trashed: 'Moved to Trash',
+    trashFailed: 'Could not move it to the Trash — nothing was changed',
     failed: 'Something went wrong',
     externalOpened: 'Opened with the system app',
   },
@@ -679,6 +716,166 @@ export function activate(ctx: finch.MiniToolContext): void {
     };
   }
 
+  /* ── file management ───────────────────────────────────────────────────── */
+
+  const INVALID_NAME_CHARS = /[/\\\u0000]/;
+
+  function validateEntryName(raw: unknown): string | null {
+    const name = String(raw ?? '').trim();
+    if (!name || name === '.' || name === '..' || INVALID_NAME_CHARS.test(name)) return null;
+    return name;
+  }
+
+  async function createEntry(state: SessionState, dirRel: string, kind: 'file' | 'folder') {
+    const dirAbs = resolveInside(state.root, dirRel);
+    if (!dirAbs) return { type: 'error', message: t('denied') };
+
+    const result = await ctx.ui.showModalDialog({
+      title: kind === 'folder' ? t('newFolder') : t('newFile'),
+      description: `${t('inFolder')}: ${dirRel || '.'}`,
+      fields: [
+        {
+          key: 'name',
+          label: t('nameLabel'),
+          type: 'text',
+          required: true,
+          placeholder: kind === 'folder' ? t('namePlaceholderFolder') : t('namePlaceholderFile'),
+        },
+      ],
+      actions: [
+        { id: 'cancel', label: t('cancelAction') },
+        { id: 'create', label: t('createAction'), variant: 'primary' },
+      ],
+    });
+    if (result.action !== 'create') return null;
+
+    const name = validateEntryName(result.values?.name);
+    if (!name) return { type: 'error', message: t('invalidName') };
+    const abs = path.join(dirAbs, name);
+    if (fs.existsSync(abs)) return { type: 'error', message: t('nameExists') };
+
+    try {
+      markSelfWrite(state, toRel(state.root, abs));
+      if (kind === 'folder') fs.mkdirSync(abs);
+      else fs.writeFileSync(abs, '', 'utf8');
+    } catch {
+      return { type: 'error', message: t('failed') };
+    }
+    state.scan = null;
+    const rel = toRel(state.root, abs);
+    return {
+      type: 'treeChanged',
+      dir: dirRel,
+      created: kind === 'file' ? rel : undefined,
+      message: `${t('created')} · ${rel}`,
+    };
+  }
+
+  async function renameEntry(state: SessionState, rel: string) {
+    const abs = resolveInside(state.root, rel);
+    if (!abs || abs === state.root) return { type: 'error', message: t('denied') };
+    if (!fs.existsSync(abs)) return { type: 'error', message: t('notFound') };
+
+    const parentRel = toRel(state.root, path.dirname(abs));
+    const current = path.basename(abs);
+    const result = await ctx.ui.showModalDialog({
+      title: t('renameAction'),
+      description: rel,
+      fields: [{ key: 'name', label: t('nameLabel'), type: 'text', required: true, default: current }],
+      actions: [
+        { id: 'cancel', label: t('cancelAction') },
+        { id: 'rename', label: t('renameAction'), variant: 'primary' },
+      ],
+    });
+    if (result.action !== 'rename') return null;
+
+    const name = validateEntryName(result.values?.name);
+    if (!name) return { type: 'error', message: t('invalidName') };
+    if (name === current) return null;
+    const target = path.join(path.dirname(abs), name);
+    if (fs.existsSync(target)) return { type: 'error', message: t('nameExists') };
+
+    try {
+      fs.renameSync(abs, target);
+    } catch {
+      return { type: 'error', message: t('failed') };
+    }
+    state.scan = null;
+    return {
+      type: 'treeChanged',
+      dir: parentRel,
+      renamed: { from: rel, to: toRel(state.root, target) },
+      message: `${t('renamed')} · ${name}`,
+    };
+  }
+
+  /** Recoverable beats gone forever: never unlink, always hand it to the OS trash. */
+  function renameIntoTrash(abs: string, trashDir: string): boolean {
+    try {
+      fs.mkdirSync(trashDir, { recursive: true });
+      let target = path.join(trashDir, path.basename(abs));
+      if (fs.existsSync(target)) target = `${target}.${Date.now()}`;
+      fs.renameSync(abs, target);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  function runQuiet(command: string, args: string[]): Promise<boolean> {
+    return new Promise((resolve) => {
+      try {
+        execFile(command, args, (error) => resolve(!error));
+      } catch {
+        resolve(false);
+      }
+    });
+  }
+
+  async function trashEntry(state: SessionState, rel: string) {
+    const abs = resolveInside(state.root, rel);
+    if (!abs || abs === state.root) return { type: 'error', message: t('denied') };
+    if (!fs.existsSync(abs)) return { type: 'error', message: t('notFound') };
+
+    const confirmed = await ctx.ui.showConfirmDialog({
+      title: t('trashTitle'),
+      description: rel,
+      message: t('trashBody'),
+      confirmLabel: t('trashAction'),
+      cancelLabel: t('cancelAction'),
+      variant: 'danger',
+    });
+    if (!confirmed.confirmed) return null;
+
+    let ok = false;
+    const platform = process.platform;
+    if (platform === 'darwin') {
+      // Finder's own delete is the only path that records where the file came from,
+      // so "Put Back" keeps working. It can be refused by Automation permissions.
+      ok = await runQuiet('osascript', ['-e', `tell application "Finder" to delete (POSIX file ${JSON.stringify(abs)})`]);
+      if (!ok) ok = renameIntoTrash(abs, path.join(os.homedir(), '.Trash'));
+    } else if (platform === 'linux') {
+      ok = await runQuiet('gio', ['trash', abs]);
+      if (!ok) ok = renameIntoTrash(abs, path.join(os.homedir(), '.local', 'share', 'Trash', 'files'));
+    } else if (platform === 'win32') {
+      const escaped = abs.replace(/'/g, "''");
+      ok = await runQuiet('powershell', [
+        '-NoProfile',
+        '-Command',
+        `Add-Type -AssemblyName Microsoft.VisualBasic; [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile('${escaped}','OnlyErrorDialogs','SendToRecycleBin')`,
+      ]);
+    }
+
+    if (!ok || fs.existsSync(abs)) return { type: 'error', message: t('trashFailed') };
+    state.scan = null;
+    return {
+      type: 'treeChanged',
+      dir: toRel(state.root, path.dirname(abs)),
+      removed: rel,
+      message: `${t('trashed')} · ${path.basename(abs)}`,
+    };
+  }
+
   function openExternally(state: SessionState, rel: string, reveal: boolean) {
     const abs = resolveInside(state.root, rel);
     if (!abs) return { type: 'error', message: t('denied') };
@@ -807,6 +1004,26 @@ export function activate(ctx: finch.MiniToolContext): void {
           return;
         }
         await panel.postMessage(restoreHistory(state, abs, String(message.id ?? '')));
+        return;
+      }
+      case 'newFile': {
+        const reply = await createEntry(state, String(message.dir ?? ''), 'file');
+        if (reply) await panel.postMessage(reply);
+        return;
+      }
+      case 'newFolder': {
+        const reply = await createEntry(state, String(message.dir ?? ''), 'folder');
+        if (reply) await panel.postMessage(reply);
+        return;
+      }
+      case 'rename': {
+        const reply = await renameEntry(state, String(message.rel ?? ''));
+        if (reply) await panel.postMessage(reply);
+        return;
+      }
+      case 'trash': {
+        const reply = await trashEntry(state, String(message.rel ?? ''));
+        if (reply) await panel.postMessage(reply);
         return;
       }
       case 'openExternal':

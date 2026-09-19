@@ -18116,6 +18116,12 @@ ${text2}</tr>
     const DEMO_OVERRIDABLE = ["showHidden", "textOnly", "hideIgnoredFolders", "sortOrder", "showModTime", "keepHistory"];
     const overrides = [];
     const demoHistory = {};
+    const messageLog = [];
+    const logMessage = (direction, payload) => {
+      const type = payload && typeof payload === "object" ? payload.type : typeof payload;
+      messageLog.push(`${direction} ${type}${payload && payload.rel ? ` ${payload.rel}` : ""}${payload && payload.renamed ? ` ${payload.renamed.from}\u2192${payload.renamed.to}` : ""}`);
+      if (messageLog.length > 60) messageLog.shift();
+    };
     const visibleEntries = (rel) => {
       const entries2 = (tree[rel] ?? []).filter((entry) => {
         if (!demoState.showHidden && entry.name.startsWith(".")) return false;
@@ -18142,10 +18148,25 @@ ${text2}</tr>
       pushSettings(patch) {
         Object.assign(demoState, patch);
         listeners.forEach((listener) => listener(settingsPayload()));
+      },
+      /** Standalone-review introspection: what the page currently believes. */
+      state() {
+        return {
+          current: S.current ? S.current.rel : null,
+          mode: S.mode,
+          dirty: S.dirty,
+          dirs: Object.fromEntries([...S.dirs.entries()].map(([key, list2]) => [key, list2.map((entry) => entry.rel)]))
+        };
+      },
+      log() {
+        return [...messageLog];
       }
     };
     const reply = (message) => {
-      const emit = (payload) => listeners.forEach((listener) => listener(payload));
+      const emit = (payload) => {
+        logMessage("\u2190", payload);
+        listeners.forEach((listener) => listener(payload));
+      };
       if (message.type === "ready") {
         emit({
           type: "snapshot",
@@ -18225,6 +18246,33 @@ ${text2}</tr>
           historyCount: name.endsWith(".md") ? 3 : 0,
           absPath: `/Users/baizhou/Demo/ArrowsPuzzle/${message.rel}`
         });
+      } else if (message.type === "newFile" || message.type === "newFolder") {
+        const dir = message.dir ?? "";
+        const isFolder = message.type === "newFolder";
+        const name = isFolder ? "\u65B0\u5EFA\u6587\u4EF6\u5939" : "\u65B0\u5EFA\u6587\u4EF6.md";
+        const rel = dir ? `${dir}/${name}` : name;
+        tree[dir] = tree[dir] ?? [];
+        if (!tree[dir].some((entry) => entry.rel === rel)) {
+          tree[dir].push({ name, rel, dir: isFolder, size: 0, mtimeMs: Date.now(), ignored: false });
+        }
+        emit({ type: "treeChanged", dir, created: isFolder ? void 0 : rel, message: `\u5DF2\u521B\u5EFA \xB7 ${rel}` });
+      } else if (message.type === "rename") {
+        const from = message.rel;
+        const dir = from.includes("/") ? from.slice(0, from.lastIndexOf("/")) : "";
+        const list2 = tree[dir] ?? [];
+        const entry = list2.find((item) => item.rel === from);
+        if (entry) {
+          entry.name = `${entry.name.replace(/(\.[^.]+)?$/, "")}-renamed${entry.dir ? "" : (entry.name.match(/\.[^.]+$/) ?? [""])[0]}`;
+          entry.rel = dir ? `${dir}/${entry.name}` : entry.name;
+          emit({ type: "treeChanged", dir, renamed: { from, to: entry.rel }, message: `\u5DF2\u91CD\u547D\u540D \xB7 ${entry.name}` });
+        }
+      } else if (message.type === "trash") {
+        const rel = message.rel;
+        const dir = rel.includes("/") ? rel.slice(0, rel.lastIndexOf("/")) : "";
+        const list2 = tree[dir] ?? [];
+        const index = list2.findIndex((item) => item.rel === rel);
+        if (index >= 0) list2.splice(index, 1);
+        emit({ type: "treeChanged", dir, removed: rel, message: `\u5DF2\u79FB\u5230\u5E9F\u7EB8\u7BD3 \xB7 ${rel}` });
       } else if (message.type === "scan") {
         const all = Object.values(tree).flat();
         const needle = String(message.query ?? "").toLowerCase();
@@ -18248,7 +18296,10 @@ ${text2}</tr>
       }
     };
     return {
-      postMessage: (message) => setTimeout(() => reply(message), 10),
+      postMessage: (message) => {
+        logMessage("\u2192", message);
+        setTimeout(() => reply(message), 10);
+      },
       onMessage: (listener) => {
         listeners.push(listener);
         return () => void 0;
@@ -18698,6 +18749,19 @@ ${text2}</tr>
     renderCrumb();
     renderTree();
   }
+  function closeFile() {
+    S.current = null;
+    S.dirty = false;
+    S.history = [];
+    resetEmpty();
+    setPanels({ empty: true });
+    ui.modeBtn.hidden = true;
+    ui.external.disabled = true;
+    setSaveStatus("");
+    renderFileActions();
+    renderCrumb();
+    renderTree();
+  }
   function showBanner(text2, actionLabel, action) {
     ui.bannerText.textContent = text2;
     ui.banner.hidden = false;
@@ -18767,14 +18831,28 @@ ${text2}</tr>
       ui.ctxmenu.appendChild(button);
     };
     const addSeparator = () => ui.ctxmenu.appendChild(document.createElement("hr"));
-    if (target.dir) {
+    if (target.dir && target.rel === "") {
+      add("\u65B0\u5EFA\u6587\u4EF6\u2026", () => send({ type: "newFile", dir: "" }));
+      add("\u65B0\u5EFA\u6587\u4EF6\u5939\u2026", () => send({ type: "newFolder", dir: "" }));
+      addSeparator();
+      add("\u5237\u65B0", () => send({ type: "refresh", rel: "" }));
+      add("\u5728\u8BBF\u8FBE\u4E2D\u663E\u793A", () => send({ type: "reveal", rel: "" }));
+    } else if (target.dir) {
       add("\u5C55\u5F00 / \u6298\u53E0", () => toggleDir(target.rel));
+      addSeparator();
+      add("\u65B0\u5EFA\u6587\u4EF6\u2026", () => send({ type: "newFile", dir: target.rel }));
+      add("\u65B0\u5EFA\u6587\u4EF6\u5939\u2026", () => send({ type: "newFolder", dir: target.rel }));
+      addSeparator();
+      add("\u5728\u6B64\u5904\u91CD\u547D\u540D\u2026", () => send({ type: "rename", rel: target.rel }));
       add("\u5728\u8BBF\u8FBE\u4E2D\u663E\u793A", () => send({ type: "reveal", rel: target.rel }));
+      addSeparator();
+      add("\u79FB\u5230\u5E9F\u7EB8\u7BD3", () => send({ type: "trash", rel: target.rel }), "danger");
     } else {
       add("\u6253\u5F00", () => openFile(target.rel));
       add("\u7528\u7CFB\u7EDF\u7A0B\u5E8F\u6253\u5F00", () => send({ type: "openExternal", rel: target.rel }));
       add("\u5728\u8BBF\u8FBE\u4E2D\u663E\u793A", () => send({ type: "reveal", rel: target.rel }));
       addSeparator();
+      add("\u91CD\u547D\u540D\u2026", () => send({ type: "rename", rel: target.rel }));
       add("\u590D\u5236\u8DEF\u5F84", async () => {
         try {
           await navigator.clipboard.writeText(`${S.root}/${target.rel}`);
@@ -18793,6 +18871,8 @@ ${text2}</tr>
       });
       addSeparator();
       add("\u63D2\u5165\u5230\u5BF9\u8BDD", () => addToComposer(target.rel));
+      addSeparator();
+      add("\u79FB\u5230\u5E9F\u7EB8\u7BD3", () => send({ type: "trash", rel: target.rel }), "danger");
     }
     ui.ctxmenu.hidden = false;
     const rect = ui.ctxmenu.getBoundingClientRect();
@@ -18809,6 +18889,11 @@ ${text2}</tr>
     if (!ui.settingsPop.contains(event.target) && event.target !== ui.settingsBtn) toggleSettingsPop(false);
   });
   document.addEventListener("scroll", hideCtxMenu, true);
+  ui.tree.addEventListener("contextmenu", (event) => {
+    if (event.target.closest(".row")) return;
+    event.preventDefault();
+    openContextMenu(event.clientX, event.clientY, { rel: "", name: "", dir: true });
+  });
   async function addToComposer(rel) {
     const lines = S.current && S.current.rel === rel && typeof S.current.lineCount === "number" ? S.current.lineCount : 1;
     try {
@@ -19274,6 +19359,24 @@ ${text2}</tr>
         if (Array.isArray(message.overrides)) S.overrides = message.overrides;
         applySettings();
         if (message.reset) toast("\u5DF2\u6062\u590D\u9ED8\u8BA4\u8BBE\u7F6E");
+        break;
+      }
+      case "treeChanged": {
+        if (message.renamed) {
+          S.dirs.delete(message.renamed.from);
+          S.open.delete(message.renamed.from);
+          if (S.current && S.current.rel === message.renamed.from) send({ type: "open", rel: message.renamed.to });
+        }
+        if (message.removed && S.current && S.current.rel === message.removed) closeFile();
+        if (message.created) {
+          expandTo(message.created);
+          openFile(message.created);
+        }
+        expandTo((message.dir ?? "") + "/x");
+        send({ type: "listDir", rel: message.dir ?? "" });
+        if ((message.dir ?? "") !== "") send({ type: "listDir", rel: "" });
+        send({ type: "touched" });
+        if (message.message) toast(message.message);
         break;
       }
       case "history": {

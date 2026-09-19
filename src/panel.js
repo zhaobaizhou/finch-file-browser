@@ -69,6 +69,12 @@ function createDemoBridge() {
   const DEMO_OVERRIDABLE = ['showHidden', 'textOnly', 'hideIgnoredFolders', 'sortOrder', 'showModTime', 'keepHistory'];
   const overrides = [];
   const demoHistory = {};
+  const messageLog = [];
+  const logMessage = (direction, payload) => {
+    const type = payload && typeof payload === 'object' ? payload.type : typeof payload;
+    messageLog.push(`${direction} ${type}${payload && payload.rel ? ` ${payload.rel}` : ''}${payload && payload.renamed ? ` ${payload.renamed.from}→${payload.renamed.to}` : ''}`);
+    if (messageLog.length > 60) messageLog.shift();
+  };
   const visibleEntries = (rel) => {
     const entries = (tree[rel] ?? []).filter((entry) => {
       if (!demoState.showHidden && entry.name.startsWith('.')) return false;
@@ -98,10 +104,25 @@ function createDemoBridge() {
       Object.assign(demoState, patch);
       listeners.forEach((listener) => listener(settingsPayload()));
     },
+    /** Standalone-review introspection: what the page currently believes. */
+    state() {
+      return {
+        current: S.current ? S.current.rel : null,
+        mode: S.mode,
+        dirty: S.dirty,
+        dirs: Object.fromEntries([...S.dirs.entries()].map(([key, list]) => [key, list.map((entry) => entry.rel)])),
+      };
+    },
+    log() {
+      return [...messageLog];
+    },
   };
 
   const reply = (message) => {
-    const emit = (payload) => listeners.forEach((listener) => listener(payload));
+    const emit = (payload) => {
+      logMessage('←', payload);
+      listeners.forEach((listener) => listener(payload));
+    };
     if (message.type === 'ready') {
       emit({
         type: 'snapshot',
@@ -185,6 +206,34 @@ function createDemoBridge() {
         historyCount: name.endsWith('.md') ? 3 : 0,
         absPath: `/Users/baizhou/Demo/ArrowsPuzzle/${message.rel}`,
       });
+    } else if (message.type === 'newFile' || message.type === 'newFolder') {
+      // Mirrors the host protocol: create, then report the tree change.
+      const dir = message.dir ?? '';
+      const isFolder = message.type === 'newFolder';
+      const name = isFolder ? '新建文件夹' : '新建文件.md';
+      const rel = dir ? `${dir}/${name}` : name;
+      tree[dir] = tree[dir] ?? [];
+      if (!tree[dir].some((entry) => entry.rel === rel)) {
+        tree[dir].push({ name, rel, dir: isFolder, size: 0, mtimeMs: Date.now(), ignored: false });
+      }
+      emit({ type: 'treeChanged', dir, created: isFolder ? undefined : rel, message: `已创建 · ${rel}` });
+    } else if (message.type === 'rename') {
+      const from = message.rel;
+      const dir = from.includes('/') ? from.slice(0, from.lastIndexOf('/')) : '';
+      const list = tree[dir] ?? [];
+      const entry = list.find((item) => item.rel === from);
+      if (entry) {
+        entry.name = `${entry.name.replace(/(\.[^.]+)?$/, '')}-renamed${entry.dir ? '' : (entry.name.match(/\.[^.]+$/) ?? [''])[0]}`;
+        entry.rel = dir ? `${dir}/${entry.name}` : entry.name;
+        emit({ type: 'treeChanged', dir, renamed: { from, to: entry.rel }, message: `已重命名 · ${entry.name}` });
+      }
+    } else if (message.type === 'trash') {
+      const rel = message.rel;
+      const dir = rel.includes('/') ? rel.slice(0, rel.lastIndexOf('/')) : '';
+      const list = tree[dir] ?? [];
+      const index = list.findIndex((item) => item.rel === rel);
+      if (index >= 0) list.splice(index, 1);
+      emit({ type: 'treeChanged', dir, removed: rel, message: `已移到废纸篓 · ${rel}` });
     } else if (message.type === 'scan') {
       const all = Object.values(tree).flat();
       const needle = String(message.query ?? '').toLowerCase();
@@ -208,7 +257,10 @@ function createDemoBridge() {
     }
   };
   return {
-    postMessage: (message) => setTimeout(() => reply(message), 10),
+    postMessage: (message) => {
+      logMessage('→', message);
+      setTimeout(() => reply(message), 10);
+    },
     onMessage: (listener) => {
       listeners.push(listener);
       return () => undefined;
@@ -729,6 +781,21 @@ function showFile(file) {
   renderTree();
 }
 
+/** Clear the viewer when the open file is gone — renamed away, trashed, … */
+function closeFile() {
+  S.current = null;
+  S.dirty = false;
+  S.history = [];
+  resetEmpty();
+  setPanels({ empty: true });
+  ui.modeBtn.hidden = true;
+  ui.external.disabled = true;
+  setSaveStatus('');
+  renderFileActions();
+  renderCrumb();
+  renderTree();
+}
+
 /* ── banner ──────────────────────────────────────────────────────────────── */
 
 function showBanner(text, actionLabel, action) {
@@ -815,14 +882,29 @@ function openContextMenu(x, y, target) {
   };
   const addSeparator = () => ui.ctxmenu.appendChild(document.createElement('hr'));
 
-  if (target.dir) {
+  if (target.dir && target.rel === '') {
+    // The folder root: it can hold new entries but cannot be renamed or removed.
+    add('新建文件…', () => send({ type: 'newFile', dir: '' }));
+    add('新建文件夹…', () => send({ type: 'newFolder', dir: '' }));
+    addSeparator();
+    add('刷新', () => send({ type: 'refresh', rel: '' }));
+    add('在访达中显示', () => send({ type: 'reveal', rel: '' }));
+  } else if (target.dir) {
     add('展开 / 折叠', () => toggleDir(target.rel));
+    addSeparator();
+    add('新建文件…', () => send({ type: 'newFile', dir: target.rel }));
+    add('新建文件夹…', () => send({ type: 'newFolder', dir: target.rel }));
+    addSeparator();
+    add('在此处重命名…', () => send({ type: 'rename', rel: target.rel }));
     add('在访达中显示', () => send({ type: 'reveal', rel: target.rel }));
+    addSeparator();
+    add('移到废纸篓', () => send({ type: 'trash', rel: target.rel }), 'danger');
   } else {
     add('打开', () => openFile(target.rel));
     add('用系统程序打开', () => send({ type: 'openExternal', rel: target.rel }));
     add('在访达中显示', () => send({ type: 'reveal', rel: target.rel }));
     addSeparator();
+    add('重命名…', () => send({ type: 'rename', rel: target.rel }));
     add('复制路径', async () => {
       try {
         await navigator.clipboard.writeText(`${S.root}/${target.rel}`);
@@ -841,6 +923,8 @@ function openContextMenu(x, y, target) {
     });
     addSeparator();
     add('插入到对话', () => addToComposer(target.rel));
+    addSeparator();
+    add('移到废纸篓', () => send({ type: 'trash', rel: target.rel }), 'danger');
   }
 
   ui.ctxmenu.hidden = false;
@@ -860,6 +944,13 @@ document.addEventListener('click', (event) => {
   if (!ui.settingsPop.contains(event.target) && event.target !== ui.settingsBtn) toggleSettingsPop(false);
 });
 document.addEventListener('scroll', hideCtxMenu, true);
+
+// Right-clicking the empty area of the tree targets the folder root itself.
+ui.tree.addEventListener('contextmenu', (event) => {
+  if (event.target.closest('.row')) return;
+  event.preventDefault();
+  openContextMenu(event.clientX, event.clientY, { rel: '', name: '', dir: true });
+});
 
 async function addToComposer(rel) {
   const lines = S.current && S.current.rel === rel && typeof S.current.lineCount === 'number' ? S.current.lineCount : 1;
@@ -1381,6 +1472,24 @@ function handle(message) {
       if (Array.isArray(message.overrides)) S.overrides = message.overrides;
       applySettings();
       if (message.reset) toast('已恢复默认设置');
+      break;
+    }
+    case 'treeChanged': {
+      if (message.renamed) {
+        S.dirs.delete(message.renamed.from);
+        S.open.delete(message.renamed.from);
+        if (S.current && S.current.rel === message.renamed.from) send({ type: 'open', rel: message.renamed.to });
+      }
+      if (message.removed && S.current && S.current.rel === message.removed) closeFile();
+      if (message.created) {
+        expandTo(message.created);
+        openFile(message.created);
+      }
+      expandTo((message.dir ?? '') + '/x');
+      send({ type: 'listDir', rel: message.dir ?? '' });
+      if ((message.dir ?? '') !== '') send({ type: 'listDir', rel: '' });
+      send({ type: 'touched' });
+      if (message.message) toast(message.message);
       break;
     }
     case 'history': {
