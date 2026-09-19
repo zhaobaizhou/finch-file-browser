@@ -49,6 +49,7 @@
   "files": [
     "dist/",
     "i18n/",
+    "icons/",
     "icon.png",
     "README.md"
   ],
@@ -198,8 +199,14 @@
           "label": "File Browser Icons"
         }
       ],
+      "icons": {
+        "file-browser": {
+          "description": "Panel with a file list — used by the Panel App, Composer button and launcher",
+          "svg": "./icons/file-browser.svg"
+        }
+      },
       "appPanel": {
-        "icon": "file-text",
+        "icon": "ext:file-browser",
         "viewType": "sessionFiles.browser",
         "instanceMode": "single",
         "showInLauncher": true,
@@ -211,8 +218,8 @@
       "composerActions": [
         {
           "id": "open-file-browser",
-          "icon": "file-text",
-          "tooltip": "Open session files"
+          "icon": "ext:file-browser",
+          "tooltip": "Open file browser"
         }
       ]
     },

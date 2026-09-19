@@ -159,7 +159,9 @@ src/panel.js     面板逻辑（marked + highlight.js + DOMPurify）
 src/paths.ts     路径守卫、扩展名分类、忽略规则
 src/session.ts   会话转录解析（开始时间、cwd、涉及的文件）
 scripts/smoke.ts 后端逻辑冒烟测试（可跑真实转录）
-docs/icon.svg    图标源文件（`npm run icon` 需要 rsvg-convert）
+docs/icon.svg    应用图标源文件（矢量，`npm run icon` 用它生成 icon.png，需要 rsvg-convert）
+docs/app-icon-source.png  icon.png 的设计来源（生图小程序出图，仅作存档）
+icons/file-browser.svg    启动器/Composer 用的 24×24 线性图标（Lucide 风格，stroke=currentColor）
 ```
 
 ### 开发命令
