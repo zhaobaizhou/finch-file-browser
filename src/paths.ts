@@ -36,7 +36,7 @@ export interface FileClassification {
   /** True when the file can be saved back from the editor. */
   editable: boolean;
   /** Highlighting/rendering hint for the page. */
-  flavor: 'markdown' | 'code' | 'plain' | 'image' | 'binary';
+  flavor: 'markdown' | 'code' | 'plain' | 'image' | 'binary' | 'svg';
 }
 
 export function extOf(filePath: string): string {
@@ -50,7 +50,8 @@ export function classify(filePath: string, size: number, maxTextBytes: number): 
   if (IMAGE_EXTENSIONS.has(ext) && ext !== '.svg') {
     return { kind: 'image', editable: false, flavor: 'image' };
   }
-  if (ext === '.svg') return { kind: 'text', editable: true, flavor: 'code' };
+  // SVG is text that is also a picture: keep it editable, but preview it rendered.
+  if (ext === '.svg') return { kind: 'text', editable: true, flavor: 'svg' };
 
   const looksText =
     TEXT_EXTENSIONS.has(ext) ||

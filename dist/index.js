@@ -138,7 +138,7 @@ function classify(filePath, size, maxTextBytes) {
   if (IMAGE_EXTENSIONS.has(ext) && ext !== ".svg") {
     return { kind: "image", editable: false, flavor: "image" };
   }
-  if (ext === ".svg") return { kind: "text", editable: true, flavor: "code" };
+  if (ext === ".svg") return { kind: "text", editable: true, flavor: "svg" };
   const looksText = TEXT_EXTENSIONS.has(ext) || base.startsWith(".") || base === "makefile" || base === "dockerfile" || base === "license" || base === "readme";
   if (!looksText) return { kind: "binary", editable: false, flavor: "binary" };
   if (size > maxTextBytes) return { kind: "too-large", editable: false, flavor: "plain" };

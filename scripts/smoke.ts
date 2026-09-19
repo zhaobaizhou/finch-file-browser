@@ -21,6 +21,7 @@ const samples = [
   ['README.md', 4200],
   ['src/index.ts', 18000],
   ['assets/logo.png', 90000],
+  ['assets/logo.svg', 2400],
   ['docs/报告.docx', 30000],
   ['huge.md', 5 * 1024 * 1024],
 ] as const;

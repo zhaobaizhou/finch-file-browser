@@ -50,6 +50,7 @@ function createDemoBridge() {
     ],
     reference: [
       { name: 'apk-identity.json', rel: 'reference/apk-identity.json', dir: false, size: 640, mtimeMs: Date.now() - 86400_000 * 2, ignored: false },
+      { name: 'logo.svg', rel: 'reference/logo.svg', dir: false, size: 520, mtimeMs: Date.now() - 86400_000 * 4, ignored: false },
     ],
   };
   const demoState = {
@@ -163,7 +164,12 @@ function createDemoBridge() {
       emit({ type: 'dir', rel: '', entries: visibleEntries('') });
     } else if (message.type === 'open') {
       const name = message.rel.split('/').pop();
-      const text = name.endsWith('.md') ? sample : '{\n  "demo": true\n}';
+      const isSvg = name.endsWith('.svg');
+      const text = isSvg
+        ? '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#16a34a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">\n  <rect width="18" height="16" x="3" y="4" rx="2.5"/>\n  <path d="M10 4v16"/>\n  <path d="M13.5 8.75h4"/>\n  <path d="M13.5 12h4"/>\n  <path d="M13.5 15.25h2.5"/>\n</svg>\n'
+        : name.endsWith('.md')
+          ? sample
+          : '{\n  "demo": true\n}';
       emit({
         type: 'file',
         rel: message.rel,
@@ -172,7 +178,7 @@ function createDemoBridge() {
         mtimeMs: Date.now(),
         changed: true,
         kind: 'text',
-        flavor: name.endsWith('.md') ? 'markdown' : 'code',
+        flavor: isSvg ? 'svg' : name.endsWith('.md') ? 'markdown' : 'code',
         editable: true,
         content: text,
         lineCount: text.split('\n').length,
@@ -570,6 +576,28 @@ function resetEmpty() {
   ui.empty.innerHTML = EMPTY_MARKUP;
 }
 
+/** Show a picture in the media pane (checkerboard background, centred). */
+function showMedia(src, name, { scalable = false } = {}) {
+  setPanels({ media: true });
+  ui.media.classList.toggle('scalable', scalable);
+  ui.media.innerHTML = '';
+  const img = document.createElement('img');
+  img.src = src;
+  img.alt = name;
+  ui.media.appendChild(img);
+}
+
+/**
+ * Render an SVG from its source text. A data URL is used rather than
+ * finch-file:// so the preview always matches what is in the editor, even
+ * before it has been saved. SVG loaded as an <img> cannot run scripts.
+ *
+ * `scalable` lets a small icon (say 24×24) fill the pane — lossless for vector art.
+ */
+function showSvg(source, name) {
+  showMedia(`data:image/svg+xml;charset=utf-8,${encodeURIComponent(source)}`, name, { scalable: true });
+}
+
 function renderPreview(file) {
   if (file.flavor === 'markdown') {
     const html = marked.parse(file.content, { gfm: true, breaks: false, async: false });
@@ -641,6 +669,8 @@ function applyMode() {
   if (S.mode === 'source') {
     setPanels({ editor: true });
     if (!S.dirty && ui.editor.value !== file.content) ui.editor.value = file.content;
+  } else if (file.flavor === 'svg') {
+    showSvg(S.dirty ? ui.editor.value : file.content, file.name);
   } else {
     setPanels({ preview: true });
     renderPreview({ ...file, content: S.dirty ? ui.editor.value : file.content });
@@ -685,12 +715,7 @@ function showFile(file) {
   updateModeButton();
 
   if (file.kind === 'image') {
-    setPanels({ media: true });
-    ui.media.innerHTML = '';
-    const img = document.createElement('img');
-    img.src = file.url;
-    img.alt = file.name;
-    ui.media.appendChild(img);
+    showMedia(file.url, file.name);
   } else if (file.kind === 'text') {
     applyMode();
   } else {
