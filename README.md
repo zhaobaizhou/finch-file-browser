@@ -49,7 +49,7 @@ npx @finchtoys/minitools add . -d      # -d 装成符号链接，改完源码重
 
 | 类型 | 行为 |
 |---|---|
-| Markdown | 渲染正文 ⇄ 源码切换，表格、任务列表、代码块高亮 |
+| Markdown | **实时编辑（Live Preview）** / 阅读 / 源码 三种视图，表格、任务列表、代码块高亮 |
 | 代码 / 纯文本 | 语法高亮预览 ⇄ 源码编辑（自动识别语言） |
 | 图片 | 内嵌预览 |
 | Word / Excel / PDF 等 | 给一张卡片，一键交给系统默认程序打开 |
@@ -62,7 +62,15 @@ npx @finchtoys/minitools add . -d      # -d 装成符号链接，改完源码重
 
 磁盘冲突保护：如果文件在你编辑期间被 Agent 或其他程序改过，自动保存会**暂停**并弹提示，让你选**以我的版本覆盖**或**先重新载入**，不会悄悄覆盖别人的改动。
 
-顶栏只有一个按钮用来切换视图 —— 标签写的是**点了会发生什么**（`查看源码` / `查看预览`），和 GitHub 的 Code / Preview 一致。
+Markdown 有三档视图，用顶栏那个按钮切换（`实时编辑 ⌄` / `阅读 ⌄` / `源码 ⌄`）：
+
+- **实时编辑 Live Preview**（默认）—— 像 Obsidian 那样：文档始终是原始 Markdown，光标**不在**某个元素上时它的标记符（`##`、`**`、`` ` ``、` ``` `）被隐藏、按渲染后的样子显示；光标一进去，那一处立刻变回原始语法。表格保留源码形态。
+- **阅读** —— 只读的渲染结果
+- **源码** —— 原始 Markdown，不做任何渲染
+
+**为什么 Live Preview 不会改写你的文件**：它建立在 CodeMirror 6 的装饰器（decoration）机制上 —— 文档模型里始终是原始字节，我们只改变**显示**。保存下去的和源码模式逐字节一致。真正的所见即所得（contenteditable / ProseMirror 那类）需要把 HTML 反向序列化成 Markdown，会静默改写表格对齐、HTML 块、脚注等；这个工具刻意不走那条路。
+
+非 Markdown 文本文件仍是两态：标签写的是**点了会发生什么**（`查看源码` / `查看预览`），和 GitHub 的 Code / Preview 一致。
 
 **版本历史**（在 `⋯` 菜单的「这个文件」里）：本工具编辑过的文件会留下历史版本，列出时间与行数。
 
@@ -119,7 +127,7 @@ npx @finchtoys/minitools add . -d      # -d 装成符号链接，改完源码重
 | `sortOrder` | 按名称（目录优先） | 或「最近修改在前」 |
 | `showModTime` | 关 | 每行显示修改时间 |
 | `scanLimit` / `scanDepth` | 8000 / 10 | 后台扫描上限，防超大目录卡顿 |
-| `markdownView` | 渲染预览 | 或直接用源码编辑器打开 |
+| `markdownView` | 实时编辑 | 或「阅读」/「源码」 |
 | `codeFontSize` | 0 | 源码区字号，0 = 跟随 Finch |
 | `wrapLongLines` | 关 | 源码区自动换行 |
 | `showLineNumbers` | 关 | 源码区显示行号 |
@@ -156,6 +164,7 @@ src/index.ts     宿主侧：目录扫描、读写、会话转录解析、文件
 src/panel.html   面板页面
 src/panel.css    样式（全部走 Finch 主题变量，自动跟随浅色/深色皮肤与字号设置）
 src/panel.js     面板逻辑（marked + highlight.js + DOMPurify）
+src/livePreview.js  Markdown 的 Live Preview —— CodeMirror 6 + 装饰器（详见上文）
 src/paths.ts     路径守卫、扩展名分类、忽略规则
 src/session.ts   会话转录解析（开始时间、cwd、涉及的文件）
 scripts/smoke.ts 后端逻辑冒烟测试（可跑真实转录）

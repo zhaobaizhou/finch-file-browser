@@ -33,7 +33,7 @@ export interface ResolvedSettings {
   showModTime: boolean;
   scanLimit: number;
   scanDepth: number;
-  markdownView: 'preview' | 'source';
+  markdownView: 'live' | 'preview' | 'source';
   codeFontSize: number;
   wrapLongLines: boolean;
   showLineNumbers: boolean;
@@ -55,7 +55,7 @@ const SETTING_DEFAULTS: ResolvedSettings = {
   showModTime: false,
   scanLimit: 8000,
   scanDepth: 10,
-  markdownView: 'preview',
+  markdownView: 'live',
   codeFontSize: 0,
   wrapLongLines: false,
   showLineNumbers: false,
@@ -284,7 +284,9 @@ export function activate(ctx: finch.MiniToolContext): void {
       return Number.isFinite(num) ? num : fallback;
     }
     if (key === 'sortOrder') return value === 'recent' ? 'recent' : 'name';
-    if (key === 'markdownView') return value === 'source' ? 'source' : 'preview';
+    if (key === 'markdownView') {
+      return value === 'source' ? 'source' : value === 'preview' ? 'preview' : 'live';
+    }
     if (key === 'externalChange') return value === 'ask' ? 'ask' : 'auto';
     return typeof value === 'string' ? value : fallback;
   }

@@ -37,6 +37,11 @@
     "prepublishOnly": "npm run typecheck && npm run build && npx @finchtoys/minitools doctor ."
   },
   "devDependencies": {
+    "@codemirror/commands": "^6.11.1",
+    "@codemirror/lang-markdown": "^6.5.2",
+    "@codemirror/language": "^6.12.4",
+    "@codemirror/state": "^6.7.6",
+    "@codemirror/view": "^6.43.13",
     "@finchtoys/minitool-api": "^0.3.2",
     "@types/node": "^26.1.0",
     "dompurify": "^3.2.4",
@@ -45,7 +50,6 @@
     "marked": "^15.0.6",
     "typescript": "^6.0.3"
   },
-  "dependencies": {},
   "files": [
     "dist/",
     "i18n/",
@@ -138,6 +142,10 @@
           "type": "select",
           "label": "Open Markdown in",
           "options": [
+            {
+              "value": "live",
+              "label": "Live preview (edit and render together)"
+            },
             {
               "value": "preview",
               "label": "Rendered preview"

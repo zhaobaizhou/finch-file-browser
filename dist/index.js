@@ -399,7 +399,7 @@ var SETTING_DEFAULTS = {
   showModTime: false,
   scanLimit: 8e3,
   scanDepth: 10,
-  markdownView: "preview",
+  markdownView: "live",
   codeFontSize: 0,
   wrapLongLines: false,
   showLineNumbers: false,
@@ -563,7 +563,9 @@ function activate(ctx) {
       return Number.isFinite(num) ? num : fallback;
     }
     if (key === "sortOrder") return value === "recent" ? "recent" : "name";
-    if (key === "markdownView") return value === "source" ? "source" : "preview";
+    if (key === "markdownView") {
+      return value === "source" ? "source" : value === "preview" ? "preview" : "live";
+    }
     if (key === "externalChange") return value === "ask" ? "ask" : "auto";
     return typeof value === "string" ? value : fallback;
   }

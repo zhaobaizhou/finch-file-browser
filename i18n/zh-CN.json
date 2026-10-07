@@ -44,6 +44,7 @@
       "markdownView": {
         "label": "Markdown 打开方式",
         "options": {
+          "live": { "label": "实时编辑（边改边渲染）" },
           "preview": { "label": "渲染后的预览" },
           "source": { "label": "源码编辑器" }
         }

@@ -1,6 +1,7 @@
 import DOMPurify from 'dompurify';
 import hljs from 'highlight.js/lib/common';
 import { marked } from 'marked';
+import { createMarkdownEditor } from './livePreview.js';
 
 /**
  * Falls back to an offline demo bridge when the page is opened outside Finch
@@ -61,7 +62,7 @@ function createDemoBridge() {
     hideIgnoredFolders: false,
     showModTime: false,
     sortOrder: 'name',
-    markdownView: 'preview',
+    markdownView: 'live',
     codeFontSize: 0,
     wrapLongLines: false,
     showLineNumbers: false,
@@ -118,6 +119,10 @@ function createDemoBridge() {
     },
     log() {
       return [...messageLog];
+    },
+    /** The live editor's CodeMirror view, so a standalone review can drive edits. */
+    liveView() {
+      return S.live.handle ? S.live.handle.view : null;
     },
   };
 
@@ -309,7 +314,7 @@ const S = {
     hideIgnoredFolders: false,
     sortOrder: 'name',
     showModTime: false,
-    markdownView: 'preview',
+    markdownView: 'live',
     codeFontSize: 0,
     wrapLongLines: false,
     showLineNumbers: false,
@@ -326,6 +331,7 @@ const S = {
   history: [],
   historyRel: '',
   media: { scale: 1, offsetX: 0, offsetY: 0, fitPending: true, allowUpscale: false },
+  live: { handle: null, rel: null },
   cursorRel: null,
   cursorScroll: false,
 };
@@ -384,6 +390,9 @@ const ui = {
   mediaZoom: el('media-zoom'),
   mediaFit: el('media-fit'),
   mediaActual: el('media-actual'),
+  liveWrap: el('live-wrap'),
+  liveHost: el('live-editor'),
+  modeMenu: el('mode-menu'),
 };
 
 /* ── helpers ─────────────────────────────────────────────────────────────── */
@@ -643,11 +652,12 @@ function expandTo(rel) {
 
 /* ── viewer ──────────────────────────────────────────────────────────────── */
 
-function setPanels({ empty = false, preview = false, editor = false, media = false }) {
+function setPanels({ empty = false, preview = false, editor = false, media = false, live = false }) {
   ui.empty.hidden = !empty;
   ui.preview.hidden = !preview;
   ui.editorWrap.hidden = !editor;
   ui.media.hidden = !media;
+  ui.liveWrap.hidden = !live;
 }
 
 const EMPTY_MARKUP =
@@ -862,14 +872,117 @@ function showBinaryCard(file) {
   ui.empty.appendChild(card);
 }
 
+/* ── editors: textarea for code, CodeMirror Live Preview for Markdown ───── */
+
+const MARKDOWN_MODES = [
+  { id: 'live', label: '实时编辑', hint: '边改边渲染，语法随光标显隐' },
+  { id: 'read', label: '阅读', hint: '只读的渲染结果' },
+  { id: 'source', label: '源码', hint: '原始 Markdown，无渲染' },
+];
+
+function isMarkdown(file) {
+  return Boolean(file && file.kind === 'text' && file.flavor === 'markdown');
+}
+
+/** Markdown edits go through CodeMirror; everything else through the textarea. */
+function editorText() {
+  if (S.live.handle && isMarkdown(S.current)) return S.live.handle.text();
+  return ui.editor.value;
+}
+
+function setEditorText(text) {
+  if (S.live.handle && isMarkdown(S.current)) S.live.handle.setText(text);
+  else ui.editor.value = text;
+}
+
+function editorLineCount() {
+  return editorText().split('\n').length;
+}
+
+function teardownLiveEditor() {
+  if (S.live.handle) {
+    S.live.handle.destroy();
+    S.live.handle = null;
+  }
+  S.live.rel = null;
+}
+
+/**
+ * The editor is rebuilt per file on purpose: CodeMirror's undo history is
+ * per-document, so reusing one instance across files would let undo drag the
+ * previous file's text into this one.
+ */
+function ensureLiveEditor(file) {
+  if (S.live.handle && S.live.rel === file.rel) return;
+  teardownLiveEditor();
+  S.live.handle = createMarkdownEditor({
+    parent: ui.liveHost,
+    doc: file.content,
+    onDocChanged: (text) => {
+      const current = S.current;
+      if (!current) return;
+      S.dirty = text !== current.content;
+      if (!S.autoSavePaused) setSaveStatus('dirty');
+      scheduleAutoSave();
+      renderCrumb();
+    },
+  });
+  S.live.rel = file.rel;
+  applyLiveSettings();
+}
+
+function applyLiveSettings() {
+  const handle = S.live.handle;
+  if (!handle) return;
+  handle.setLive(S.mode === 'live');
+  handle.setLineNumbers(Boolean(S.settings.showLineNumbers));
+  handle.setWrap(Boolean(S.settings.wrapLongLines));
+  const size = S.settings.codeFontSize;
+  ui.liveHost.style.fontSize = size > 0 ? `${size}px` : '';
+}
+
+/* ── mode switching ─────────────────────────────────────────────────────── */
+
 function updateModeButton() {
   const file = S.current;
   const isText = Boolean(file && file.kind === 'text');
   ui.modeBtn.hidden = !isText;
   if (!isText) return;
-  // The label names the action, not the current state — like GitHub's Code/Preview.
+  if (isMarkdown(file)) {
+    const current = MARKDOWN_MODES.find((mode) => mode.id === S.mode) ?? MARKDOWN_MODES[0];
+    ui.modeBtn.textContent = `${current.label} ⌄`;
+    ui.modeBtn.title = current.hint;
+    return;
+  }
+  // For code and plain text the label names the action, like GitHub's Code/Preview.
   ui.modeBtn.textContent = S.mode === 'source' ? '查看预览' : '查看源码';
-  ui.modeBtn.title = S.mode === 'source' ? '切回渲染后的预览' : '查看并编辑 Markdown 源码';
+  ui.modeBtn.title = S.mode === 'source' ? '切回渲染后的预览' : '查看并编辑源码';
+}
+
+function hideModeMenu() {
+  ui.modeMenu.hidden = true;
+}
+
+function openModeMenu() {
+  ui.modeMenu.innerHTML = '';
+  for (const mode of MARKDOWN_MODES) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = mode.label;
+    button.title = mode.hint;
+    if (mode.id === S.mode) button.classList.add('active');
+    button.addEventListener('click', () => {
+      hideModeMenu();
+      S.mode = mode.id;
+      applyMode();
+    });
+    ui.modeMenu.appendChild(button);
+  }
+  const rect = ui.modeBtn.getBoundingClientRect();
+  ui.modeMenu.hidden = false;
+  const width = ui.modeMenu.getBoundingClientRect().width;
+  ui.modeMenu.style.left = `${Math.max(6, Math.min(rect.right - width, window.innerWidth - width - 6))}px`;
+  ui.modeMenu.style.top = `${rect.bottom + 4}px`;
 }
 
 function applyMode() {
@@ -879,14 +992,27 @@ function applyMode() {
     return;
   }
   updateModeButton();
+  const content = S.dirty ? editorText() : file.content;
+
+  if (isMarkdown(file)) {
+    if (S.mode === 'read') {
+      setPanels({ preview: true });
+      renderPreview({ ...file, content });
+      return;
+    }
+    setPanels({ live: true });
+    applyLiveSettings();
+    return;
+  }
+
   if (S.mode === 'source') {
     setPanels({ editor: true });
     if (!S.dirty && ui.editor.value !== file.content) ui.editor.value = file.content;
   } else if (file.flavor === 'svg') {
-    showSvg(S.dirty ? ui.editor.value : file.content, file.name);
+    showSvg(content, file.name);
   } else {
     setPanels({ preview: true });
-    renderPreview({ ...file, content: S.dirty ? ui.editor.value : file.content });
+    renderPreview({ ...file, content });
   }
 }
 
@@ -908,7 +1034,7 @@ function showFile(file) {
   // Re-opening the file we already have open (a refresh, or an external change we
   // reloaded) must not yank the view mode or the caret out from under the user.
   const keepMode = sameFile ? S.mode : null;
-  const caret = sameFile
+  const caret = sameFile && !isMarkdown(file)
     ? { start: ui.editor.selectionStart, end: ui.editor.selectionEnd, top: ui.editor.scrollTop }
     : null;
 
@@ -916,7 +1042,7 @@ function showFile(file) {
   S.diskConflict = null;
   S.dirty = false;
   resetEmpty();
-  ui.editor.value = file.kind === 'text' ? file.content : '';
+  ui.editor.value = file.kind === 'text' && !isMarkdown(file) ? file.content : '';
   if (caret) {
     const max = ui.editor.value.length;
     ui.editor.selectionStart = Math.min(caret.start, max);
@@ -924,7 +1050,12 @@ function showFile(file) {
     ui.editor.scrollTop = caret.top;
   }
   renderGutter();
-  S.mode = keepMode ?? (file.flavor === 'markdown' && S.settings.markdownView === 'source' ? 'source' : 'preview');
+
+  if (isMarkdown(file)) ensureLiveEditor(file);
+  else teardownLiveEditor();
+
+  const preferred = S.settings.markdownView === 'source' ? 'source' : S.settings.markdownView;
+  S.mode = keepMode ?? (isMarkdown(file) ? preferred : 'preview');
   updateModeButton();
 
   if (file.kind === 'image') {
@@ -982,13 +1113,13 @@ function save({ silent = true } = {}) {
   if (!file || !file.editable) return;
   clearTimeout(S.autoSaveTimer);
   if (silent) setSaveStatus('saving');
-  const content = ui.editor.value;
+  const content = editorText();
   send({ type: 'save', rel: file.rel, content, baseMtimeMs: file.mtimeMs });
 }
 
 ui.editor.addEventListener('input', () => {
   const file = S.current;
-  if (!file) return;
+  if (!file || isMarkdown(file)) return;
   S.dirty = ui.editor.value !== file.content;
   if (!S.autoSavePaused) setSaveStatus('dirty');
   scheduleAutoSave();
@@ -1022,6 +1153,10 @@ document.addEventListener('keydown', (event) => {
       hideCtxMenu();
       return;
     }
+    if (!ui.modeMenu.hidden) {
+      hideModeMenu();
+      return;
+    }
     if (!ui.settingsPop.hidden) {
       toggleSettingsPop(false);
       return;
@@ -1042,7 +1177,13 @@ ui.external.addEventListener('click', () => {
 
 ui.bannerClose.addEventListener('click', hideBanner);
 
-ui.modeBtn.addEventListener('click', () => {
+ui.modeBtn.addEventListener('click', (event) => {
+  event.stopPropagation();
+  if (isMarkdown(S.current)) {
+    if (ui.modeMenu.hidden) openModeMenu();
+    else hideModeMenu();
+    return;
+  }
   S.mode = S.mode === 'source' ? 'preview' : 'source';
   applyMode();
 });
@@ -1257,6 +1398,7 @@ function hideCtxMenu() {
 
 document.addEventListener('click', (event) => {
   if (!ui.ctxmenu.contains(event.target)) hideCtxMenu();
+  if (!ui.modeMenu.contains(event.target) && event.target !== ui.modeBtn) hideModeMenu();
   if (!ui.settingsPop.contains(event.target) && event.target !== ui.settingsBtn) toggleSettingsPop(false);
 });
 document.addEventListener('scroll', hideCtxMenu, true);
@@ -1305,8 +1447,11 @@ function applySettings() {
   ui.editor.style.fontSize = codeFontSize > 0 ? `${codeFontSize}px` : '';
   ui.gutter.style.fontSize = codeFontSize > 0 ? `${codeFontSize}px` : '';
   ui.editor.classList.toggle('wrap', Boolean(wrapLongLines));
-  ui.gutter.hidden = !showLineNumbers;
-  if (showLineNumbers) renderGutter();
+  // Markdown brings its own gutter and wrapping inside CodeMirror.
+  const liveActive = Boolean(S.live.handle) && isMarkdown(S.current);
+  ui.gutter.hidden = !showLineNumbers || liveActive;
+  if (showLineNumbers && !liveActive) renderGutter();
+  applyLiveSettings();
 
   renderSettingsRows();
   renderFileActions();
@@ -1731,8 +1876,8 @@ function handle(message) {
           // The disk now holds another version — reload it instead of trusting the buffer.
           send({ type: 'open', rel: message.rel });
         } else {
-          S.current.content = ui.editor.value;
-          S.current.lineCount = ui.editor.value.split('\n').length;
+          S.current.content = editorText();
+          S.current.lineCount = editorLineCount();
           renderCrumb();
           renderFileActions();
         }

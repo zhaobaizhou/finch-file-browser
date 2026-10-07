@@ -176,6 +176,21 @@ html, body {
   overflow: auto;
 }
 
+/* ── Live Preview (CodeMirror) ───────────────────────────────────────────── */
+
+.live-wrap { flex: 1; min-height: 0; display: flex; }
+.live-host { flex: 1; min-height: 0; display: flex; }
+.live-host > .cm-editor { flex: 1; min-height: 0; }
+.live-host .cm-scroller { overflow: auto; }
+.live-host .cm-editor.cm-focused { outline: none; }
+
+/* Headings get a rule under the top two levels, matching the reading view. */
+.live-host .cm-line.cm-lp-h1 { border-bottom: 1px solid var(--fb-border-subtle); }
+.live-host .cm-line.cm-lp-h1,
+.live-host .cm-line.cm-lp-h2 { padding-bottom: 2px; }
+/* The line the caret is on always shows its raw syntax. */
+.live-host .cm-line.cm-lp-raw { color: var(--fb-text-2); }
+
 /* ── image / SVG viewer ──────────────────────────────────────────────────── */
 
 .media {
@@ -661,6 +676,8 @@ html[data-theme="dark"] .hljs-punctuation { color: #56b6c2; }
 }
 .ctxmenu button:hover { background: var(--fb-bg-hover); }
 .ctxmenu .danger { color: var(--fb-danger); }
+.ctxmenu button.active { color: var(--fb-accent); font-weight: 600; }
+.ctxmenu button.active::after { content: "✓"; margin-left: auto; }
 .ctxmenu hr { border: 0; border-top: 1px solid var(--fb-border-subtle); margin: 4px 2px; }
 
 .tip {

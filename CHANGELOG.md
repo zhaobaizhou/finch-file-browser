@@ -8,7 +8,27 @@ Releases are batched by user-visible milestone rather than published per commit 
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+
+- **Markdown Live Preview** (the new default view): Obsidian-style in-place rendering. The
+  document stays raw Markdown and a decoration pass hides the syntax markers of every element
+  the caret is not in — put the caret on a heading and its `##` reappear, move away and they
+  vanish. Built on CodeMirror 6 decorations, so what gets saved is byte-identical to source
+  mode; nothing is ever round-tripped through HTML. Markdown now has three views (实时编辑 /
+  阅读 / 源码) behind one button.
+
+### Changed
+
+- The page bundle grew from ~600 KB to ~1.6 MB unminified by taking on CodeMirror 6. It is
+  served from Finch's local static server, so nothing is downloaded; the bundle is deliberately
+  left unminified to keep the webview debuggable.
+
+### Fixed
+
+- Two bugs in the new decoration pass, both caught by testing rather than reasoning: the module
+  imported `Compartment`/`EditorState` but had dropped `RangeSetBuilder`, which made the whole
+  plugin throw and silently disable every decoration; and the range guard `to > from` discarded
+  zero-width *line* decorations, so heading and blockquote styling never applied.
 
 ## [0.4.0] — 2026-09-19
 
