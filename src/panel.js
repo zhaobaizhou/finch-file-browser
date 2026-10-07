@@ -2,6 +2,7 @@ import DOMPurify from 'dompurify';
 import hljs from 'highlight.js/lib/common';
 import { marked } from 'marked';
 import { createMarkdownEditor } from './livePreview.js';
+import { parseTableSource, serializeTable } from './markdownTable.js';
 
 /**
  * Falls back to an offline demo bridge when the page is opened outside Finch
@@ -338,6 +339,7 @@ const S = {
   historyRel: '',
   media: { scale: 1, offsetX: 0, offsetY: 0, fitPending: true, allowUpscale: false },
   live: { handle: null, rel: null },
+  tableEdit: null,
   cursorRel: null,
   cursorScroll: false,
 };
@@ -399,6 +401,16 @@ const ui = {
   liveWrap: el('live-wrap'),
   liveHost: el('live-editor'),
   modeMenu: el('mode-menu'),
+  tableEditor: el('table-editor'),
+  tableGrid: el('table-grid'),
+  tableNote: el('table-note'),
+  tableClose: el('table-close'),
+  tableCancel: el('table-cancel'),
+  tableSave: el('table-save'),
+  tableAddRow: el('table-add-row'),
+  tableAddCol: el('table-add-col'),
+  tableDelRow: el('table-del-row'),
+  tableDelCol: el('table-del-col'),
 };
 
 /* ── helpers ─────────────────────────────────────────────────────────────── */
@@ -906,6 +918,7 @@ function editorLineCount() {
 }
 
 function teardownLiveEditor() {
+  if (!ui.tableEditor.hidden) closeTableEditor();
   if (S.live.handle) {
     S.live.handle.destroy();
     S.live.handle = null;
@@ -932,6 +945,7 @@ function ensureLiveEditor(file) {
       scheduleAutoSave();
       renderCrumb();
     },
+    onEditTable: (meta, rows) => openTableEditor(meta, rows),
   });
   S.live.rel = file.rel;
   applyLiveSettings();
@@ -948,6 +962,202 @@ function applyLiveSettings() {
   // The prose keeps Finch's body size; only code changes with this setting.
   ui.liveHost.style.setProperty('--lp-code-size', size > 0 ? `${size}px` : '');
 }
+
+/* ── table grid editor ───────────────────────────────────────────────────── */
+
+/**
+ * Editing a table as a grid means the table's Markdown is rewritten when you
+ * save — there is no way around that, because what you are editing is a model,
+ * not text. The trade is bounded to one table block and the output shape is
+ * always the same, which is what Typora does too. Everything outside the table
+ * is untouched, and 源码 view still edits the raw bytes if you want them back.
+ */
+function openTableEditor(meta) {
+  const handle = S.live.handle;
+  if (!handle || !ui.tableEditor.hidden) return;
+  const parsed = parseTableSource(meta.source);
+  const columns = Math.max(1, parsed.header.length);
+  S.tableEdit = {
+    meta,
+    align: parsed.align,
+    columns,
+    header: pad(parsed.header, columns),
+    body: parsed.body.map((row) => pad(row, columns)),
+  };
+  if (!S.tableEdit.header.some((cell) => cell.length)) S.tableEdit.header = new Array(columns).fill('');
+  if (!S.tableEdit.body.length) S.tableEdit.body.push(new Array(columns).fill(''));
+  renderTableGrid();
+  ui.tableEditor.hidden = false;
+  const first = ui.tableGrid.querySelector('input');
+  if (first) {
+    first.focus();
+    first.select();
+  }
+}
+
+function pad(row, columns) {
+  const next = row.slice(0, columns);
+  while (next.length < columns) next.push('');
+  return next;
+}
+
+function renderTableGrid() {
+  const state = S.tableEdit;
+  if (!state) return;
+  const grid = document.createElement('table');
+  const body = document.createElement('tbody');
+
+  const addRow = (label, cells, isHeader) => {
+    const tr = document.createElement('tr');
+    if (isHeader) tr.className = 'table-editor-head-row';
+    const th = document.createElement('th');
+    th.scope = 'row';
+    th.textContent = label;
+    tr.appendChild(th);
+    cells.forEach((cell, index) => {
+      const td = document.createElement('td');
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.value = cell;
+      input.dataset.role = isHeader ? 'header' : 'body';
+      input.dataset.index = String(index);
+      input.name = `${isHeader ? 'header' : 'body'}-${index}`;
+      input.spellcheck = false;
+      input.title = `${isHeader ? '表头' : '单元格'} · 第 ${index + 1} 列`;
+      input.addEventListener('keydown', onGridKeydown);
+      td.appendChild(input);
+      tr.appendChild(td);
+    });
+    body.appendChild(tr);
+  };
+
+  addRow('表头', state.header, true);
+  state.body.forEach((row, index) => addRow(`第 ${index + 1} 行`, row, false));
+  grid.appendChild(body);
+  ui.tableGrid.replaceChildren(grid);
+  ui.tableNote.textContent = `${state.columns} 列 · ${state.body.length} 行`;
+}
+
+/** Read the grid back out of the DOM — the inputs are the source of truth. */
+function readTableGrid() {
+  const state = S.tableEdit;
+  if (!state) return null;
+  const cells = (role) =>
+    [...ui.tableGrid.querySelectorAll(`input[data-role="${role}"]`)].map((input) => input.value);
+  const columns = state.columns;
+  const header = pad(cells('header'), columns);
+  const flat = cells('body');
+  const body = [];
+  for (let index = 0; index < flat.length; index += columns) body.push(flat.slice(index, index + columns));
+  return { header, body, align: state.align };
+}
+
+function onGridKeydown(event) {
+  const input = event.target;
+  if (!(input instanceof HTMLInputElement)) return;
+  const inputs = [...ui.tableGrid.querySelectorAll('input')];
+  const position = inputs.indexOf(input);
+  if (event.key === 'Enter') {
+    event.preventDefault();
+    // Enter walks down the same column, adding a row when it runs out — the
+    // behaviour Advanced Tables established for tables in Obsidian.
+    const next = inputs[position + S.tableEdit.columns];
+    if (next) {
+      next.focus();
+      next.select();
+    } else {
+      addGridRow();
+      const after = [...ui.tableGrid.querySelectorAll('input')];
+      const created = after[position + S.tableEdit.columns];
+      if (created) {
+        created.focus();
+        created.select();
+      }
+    }
+    return;
+  }
+  if (event.key === 'Escape') {
+    event.preventDefault();
+    event.stopPropagation();
+    closeTableEditor();
+  }
+}
+
+function addGridRow() {
+  const state = S.tableEdit;
+  if (!state) return;
+  state.body = [...state.body, new Array(state.columns).fill('')];
+  renderTableGrid();
+}
+
+function addGridColumn() {
+  const state = S.tableEdit;
+  if (!state) return;
+  const values = readTableGrid();
+  state.columns += 1;
+  state.align = [...state.align, null];
+  state.header = pad(values.header, state.columns);
+  state.body = values.body.map((row) => pad(row, state.columns));
+  renderTableGrid();
+}
+
+function removeGridRow() {
+  const state = S.tableEdit;
+  if (!state || state.body.length <= 1) return;
+  const values = readTableGrid();
+  state.body = values.body.slice(0, -1);
+  state.header = values.header;
+  renderTableGrid();
+}
+
+function removeGridColumn() {
+  const state = S.tableEdit;
+  if (!state || state.columns <= 1) return;
+  const values = readTableGrid();
+  state.columns -= 1;
+  state.align = state.align.slice(0, state.columns);
+  state.header = pad(values.header, state.columns);
+  state.body = values.body.map((row) => pad(row, state.columns));
+  renderTableGrid();
+}
+
+function saveTableEditor() {
+  const state = S.tableEdit;
+  const handle = S.live.handle;
+  if (!state || !handle) return;
+  const view = handle.view;
+  const { meta } = state;
+  // The document may have moved on while the grid was open; refuse rather than
+  // write a table over the wrong range.
+  if (view.state.doc.sliceString(meta.from, meta.to) !== meta.source) {
+    closeTableEditor();
+    toast('这一张表已经改过了，请重新点击「编辑表格」');
+    return;
+  }
+  const markdown = serializeTable(readTableGrid(), { pad: true });
+  closeTableEditor();
+  view.dispatch({ changes: { from: meta.from, to: meta.to, insert: markdown } });
+  view.focus();
+  toast('表格已更新');
+}
+
+function closeTableEditor() {
+  ui.tableEditor.hidden = true;
+  ui.tableGrid.replaceChildren();
+  S.tableEdit = null;
+}
+
+ui.tableAddRow.addEventListener('click', addGridRow);
+ui.tableAddCol.addEventListener('click', addGridColumn);
+ui.tableDelRow.addEventListener('click', removeGridRow);
+ui.tableDelCol.addEventListener('click', removeGridColumn);
+ui.tableSave.addEventListener('click', saveTableEditor);
+ui.tableCancel.addEventListener('click', closeTableEditor);
+ui.tableClose.addEventListener('click', closeTableEditor);
+ui.tableEditor.addEventListener('mousedown', (event) => {
+  // Clicking the backdrop dismisses, clicking the panel does not.
+  if (event.target === ui.tableEditor) closeTableEditor();
+});
 
 /* ── mode switching ─────────────────────────────────────────────────────── */
 
@@ -1157,6 +1367,10 @@ document.addEventListener('keydown', (event) => {
   }
   if (event.key === 'Escape') {
     // Layered: dismiss the transient surfaces first, then clear state.
+    if (!ui.tableEditor.hidden) {
+      closeTableEditor();
+      return;
+    }
     if (!ui.ctxmenu.hidden) {
       hideCtxMenu();
       return;

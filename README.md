@@ -49,7 +49,7 @@ npx @finchtoys/minitools add . -d      # -d 装成符号链接，改完源码重
 
 | 类型 | 行为 |
 |---|---|
-| Markdown | **实时编辑（Live Preview）** / 阅读 / 源码 三种视图，表格、任务列表、代码块高亮 |
+| Markdown | **实时编辑（Live Preview）** / 阅读 / 源码 三种视图，表格可在网格里编辑，任务列表、代码块高亮 |
 | 代码 / 纯文本 | 语法高亮预览 ⇄ 源码编辑（自动识别语言） |
 | 图片 | 内嵌预览 |
 | Word / Excel / PDF 等 | 给一张卡片，一键交给系统默认程序打开 |
@@ -64,11 +64,23 @@ npx @finchtoys/minitools add . -d      # -d 装成符号链接，改完源码重
 
 Markdown 有三档视图，用顶栏那个按钮切换（`实时编辑 ⌄` / `阅读 ⌄` / `源码 ⌄`）：
 
-- **实时编辑 Live Preview**（默认）—— 像 Obsidian 那样：文档始终是原始 Markdown，光标**不在**某个元素上时它的标记符（`##`、`**`、`` ` ``、` ``` `）被隐藏、按渲染后的样子显示；光标一进去，那一处立刻变回原始语法。表格保留源码形态。
+- **实时编辑 Live Preview**（默认）—— 像 Obsidian 那样：文档始终是原始 Markdown，光标**不在**某个元素上时它的标记符（`##`、`**`、`` ` ``、` ``` `）被隐藏、按渲染后的样子显示；光标一进去，那一处立刻变回原始语法。
 - **阅读** —— 只读的渲染结果
 - **源码** —— 原始 Markdown，不做任何渲染
 
-**为什么 Live Preview 不会改写你的文件**：它建立在 CodeMirror 6 的装饰器（decoration）机制上 —— 文档模型里始终是原始字节，我们只改变**显示**。保存下去的和源码模式逐字节一致。真正的所见即所得（contenteditable / ProseMirror 那类）需要把 HTML 反向序列化成 Markdown，会静默改写表格对齐、HTML 块、脚注等；这个工具刻意不走那条路。
+#### 表格：渲染出来，用网格编辑
+
+表格是唯一**不会**因光标进入而变回源码的元素 —— 光标根本进不去（方向键整块跳过去）。鼠标悬停在表格上会浮出「编辑表格」，点开一个类 Excel 的小网格：
+
+- `Tab` / `Shift+Tab` 在格子间跳，`Enter` 往下走（到底自动加一行），`Esc` 取消
+- 底部可增删行列；内容里的 `|` 会自动转义，不会撑破表格
+- 保存后**只重写这一张表**：列宽按**显示宽度**补齐（中文算两格，竖线真的对齐）、保留 `:---:` 对齐标记，表格之外一个字节都不动
+
+这是全流程里**唯一**会改写文件内容的地方，原因很直白：你编辑的是一个「表格模型」而不是文本，存回去必须重新序列化。代价被限制在这一张表内。Typora 走的就是这条路；Obsidian 的 Live Preview 不走（所以它的光标一进表格就折叠成源码）。想要原始字节，切「源码」视图即可。
+
+在**源码**视图里，`Tab` / `Shift+Tab` 同样能在单元格间跳格并自动对齐列宽 —— 取自 Obsidian 的 *Advanced Tables* 插件，且除了空白字符什么都不改。
+
+**为什么 Live Preview 不会改写你的文件**：它建立在 CodeMirror 6 的装饰器（decoration）机制上 —— 文档模型里始终是原始字节，我们只改变**显示**。保存下去的和源码模式逐字节一致（表格网格编辑是唯一例外，见上）。真正的所见即所得（contenteditable / ProseMirror 那类）需要把 HTML 反向序列化成 Markdown，会静默改写表格对齐、HTML 块、脚注等；这个工具刻意不走那条路。
 
 非 Markdown 文本文件仍是两态：标签写的是**点了会发生什么**（`查看源码` / `查看预览`），和 GitHub 的 Code / Preview 一致。
 
@@ -165,6 +177,7 @@ src/panel.html   面板页面
 src/panel.css    样式（全部走 Finch 主题变量，自动跟随浅色/深色皮肤与字号设置）
 src/panel.js     面板逻辑（marked + highlight.js + DOMPurify）
 src/livePreview.js  Markdown 的 Live Preview —— CodeMirror 6 + 装饰器（详见上文）
+src/markdownTable.js 表格的解析/序列化/显示宽度补齐，Live Preview 与网格编辑器共用
 src/paths.ts     路径守卫、扩展名分类、忽略规则
 src/session.ts   会话转录解析（开始时间、cwd、涉及的文件）
 scripts/smoke.ts 后端逻辑冒烟测试（可跑真实转录）

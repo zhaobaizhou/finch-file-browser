@@ -16,12 +16,25 @@ Releases are batched by user-visible milestone rather than published per commit 
   vanish. Built on CodeMirror 6 decorations, so what gets saved is byte-identical to source
   mode; nothing is ever round-tripped through HTML. Markdown now has three views (实时编辑 /
   阅读 / 源码) behind one button.
+- **Tables render, and are edited as a grid.** A rendered table is no longer swapped back to
+  source when you click it: hovering reveals 编辑表格, which opens a small spreadsheet-style
+  grid (Tab / Shift+Tab between cells, Enter down a column, add and remove rows and columns).
+  Saving rewrites that one table block — this is the one place the file is not written back
+  byte-identically, because a grid is a model rather than text. Columns are re-padded to equal
+  *display* width (CJK counts as two), alignment markers are preserved, and nothing outside the
+  table is touched. 源码 view still edits the raw bytes.
+- **Tab / Shift+Tab navigation inside a raw table.** In 源码 (or anywhere a table shows as
+  source) Tab moves to the next cell and Shift+Tab to the previous, wrapping to the next row and
+  adding one when you tab off the end, then re-pads the columns. This is the useful half of
+  Obsidian's *Advanced Tables* plugin, and it rewrites nothing but whitespace.
 
 ### Changed
 
 - The page bundle grew from ~600 KB to ~1.6 MB unminified by taking on CodeMirror 6. It is
   served from Finch's local static server, so nothing is downloaded; the bundle is deliberately
   left unminified to keep the webview debuggable.
+- Tables in Live Preview are marked as atomic ranges, so the arrow keys step over them instead
+  of walking the caret through text that is not on screen.
 
 ### Fixed
 
@@ -29,6 +42,13 @@ Releases are batched by user-visible milestone rather than published per commit 
   imported `Compartment`/`EditorState` but had dropped `RangeSetBuilder`, which made the whole
   plugin throw and silently disable every decoration; and the range guard `to > from` discarded
   zero-width *line* decorations, so heading and blockquote styling never applied.
+- The first cut of Live Preview was poor quality and was reported as such: tables still showed
+  source (a multi-line replacement must be a block widget, and CodeMirror refuses block
+  decorations from view plugins, so the pass had to become a `StateField`), long lines overflowed
+  the pane and ran over the file tree (a flex chain missing `min-width: 0`), prose was set in
+  monospace, and Live Preview never wrapped.
+- Cell navigation compared line-relative cell offsets against absolute document offsets, so Tab
+  always thought the caret was in the last cell of a row.
 
 ## [0.4.0] — 2026-09-19
 

@@ -100,6 +100,119 @@ html, body {
 }
 .btn:hover:not(:disabled) { background: var(--fb-bg-hover); }
 .btn:disabled { opacity: 0.42; cursor: default; }
+.btn.primary {
+  background: var(--fb-accent);
+  border-color: var(--fb-accent);
+  color: var(--fb-bg-root, #fff);
+  font-weight: 600;
+}
+.btn.primary:hover:not(:disabled) { filter: brightness(1.08); background: var(--fb-accent); }
+
+/* ── table grid editor ───────────────────────────────────────────────────── */
+
+.table-editor {
+  position: absolute;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, var(--fb-bg-root) 62%, transparent);
+  padding: 18px;
+}
+.table-editor-panel {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  max-width: 100%;
+  max-height: 100%;
+  background: var(--fb-bg-elevated);
+  border: 1px solid var(--fb-border);
+  border-radius: calc(var(--fb-radius) + 3px);
+  box-shadow: 0 18px 48px rgb(0 0 0 / 28%);
+  overflow: hidden;
+}
+.table-editor-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--fb-border-subtle);
+  flex: none;
+}
+.table-editor-title { font-weight: 600; font-size: var(--fb-fs); }
+.table-editor-hint {
+  color: var(--fb-text-3);
+  font-size: calc(var(--fb-fs) - 1px);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+  min-width: 0;
+}
+.table-editor-scroll { overflow: auto; padding: 12px; flex: 1; min-height: 0; }
+.table-editor-grid table { border-collapse: collapse; }
+.table-editor-grid th {
+  font-size: calc(var(--fb-fs) - 2px);
+  font-weight: 500;
+  color: var(--fb-text-3);
+  text-align: left;
+  padding: 0 0 3px 2px;
+}
+.table-editor-grid input {
+  font: inherit;
+  font-size: calc(var(--fb-fs) - 1px);
+  color: var(--fb-text-1);
+  background: var(--fb-bg-main);
+  border: 1px solid var(--fb-border);
+  border-radius: 3px;
+  padding: 4px 6px;
+  min-width: 90px;
+  width: 100%;
+  box-sizing: border-box;
+}
+.table-editor-grid input:focus {
+  outline: none;
+  border-color: var(--fb-accent);
+  background: var(--fb-bg-root);
+}
+.table-editor-grid td { padding: 2px; }
+.table-editor-head-row td { padding: 2px 2px 6px; }
+.table-editor-foot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 9px 12px;
+  border-top: 1px solid var(--fb-border-subtle);
+  background: var(--fb-bg-main);
+  flex: none;
+}
+.table-editor-foot .grow { flex: 1; }
+.table-editor-note { color: var(--fb-text-3); font-size: calc(var(--fb-fs) - 1px); }
+
+/* The affordance that opens the grid editor, revealed on hover over a table. */
+.cm-lp-table { position: relative; }
+.cm-lp-table-edit {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  z-index: 2;
+  appearance: none;
+  font: inherit;
+  font-size: calc(var(--fb-fs) - 2px);
+  line-height: 1;
+  padding: 3px 7px;
+  border: 1px solid var(--fb-border);
+  border-radius: 999px;
+  background: var(--fb-bg-elevated);
+  color: var(--fb-text-2);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.cm-lp-table:hover .cm-lp-table-edit,
+.cm-lp-table-edit:focus-visible { opacity: 1; }
+.cm-lp-table-edit:hover { color: var(--fb-text-1); background: var(--fb-bg-hover); }
 
 /* ── body ────────────────────────────────────────────────────────────────── */
 

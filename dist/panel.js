@@ -43521,6 +43521,98 @@ ${text2}</tr>
     }
   });
 
+  // src/markdownTable.js
+  function displayWidth(text2) {
+    let width = 0;
+    for (const character of String(text2)) {
+      const code2 = character.codePointAt(0) ?? 0;
+      const wide = code2 >= 4352 && code2 <= 4447 || code2 >= 11904 && code2 <= 12350 || code2 >= 12353 && code2 <= 13311 || code2 >= 13312 && code2 <= 19903 || code2 >= 19968 && code2 <= 40959 || code2 >= 40960 && code2 <= 42191 || code2 >= 44032 && code2 <= 55203 || code2 >= 63744 && code2 <= 64255 || code2 >= 65072 && code2 <= 65103 || code2 >= 65280 && code2 <= 65376 || code2 >= 65504 && code2 <= 65510 || code2 >= 127744 && code2 <= 129791 || code2 >= 131072 && code2 <= 262141;
+      width += wide ? 2 : 1;
+    }
+    return width;
+  }
+  function splitRow(line) {
+    return line.replace(/^\s*\|/, "").replace(/\|\s*$/, "").split(/(?<!\\)\|/).map((cell) => cell.replace(/\\\|/g, "|").trim());
+  }
+  function parseAlign(marker) {
+    const text2 = marker.trim();
+    const left = text2.startsWith(":");
+    const right = text2.endsWith(":");
+    if (left && right) return "center";
+    if (right) return "right";
+    if (left) return "left";
+    return null;
+  }
+  function parseTableSource(source) {
+    const lines = String(source).split("\n").filter((line) => line.trim().length);
+    if (!lines.length) return { header: [], body: [], align: [] };
+    const header = splitRow(lines[0]);
+    let align = header.map(() => null);
+    let bodyStart = 1;
+    if (lines.length > 1 && /^[\s|:-]+$/.test(lines[1])) {
+      align = splitRow(lines[1]).map(parseAlign);
+      bodyStart = 2;
+    }
+    const body = lines.slice(bodyStart).map(splitRow);
+    while (align.length < header.length) align.push(null);
+    return { header, body, align: align.slice(0, header.length) };
+  }
+  function escapeCell(text2) {
+    return String(text2).trim().replace(/\|/g, "\\|");
+  }
+  function serializeTable({ header, body, align }, { pad: pad2 = true } = {}) {
+    const columns = header.length;
+    if (!columns) return "";
+    const widths = header.map((cell) => displayWidth(escapeCell(cell)));
+    if (pad2) {
+      for (const row of body) {
+        for (let index = 0; index < columns; index += 1) {
+          widths[index] = Math.max(widths[index], displayWidth(escapeCell(row[index] ?? "")));
+        }
+      }
+    }
+    const rule = header.map((_, index) => {
+      const width = Math.max(3, pad2 ? widths[index] : 3);
+      const alignment = align[index];
+      if (alignment === "center") return `:${"-".repeat(Math.max(1, width - 2))}:`;
+      if (alignment === "right") return `${"-".repeat(Math.max(1, width - 1))}:`;
+      if (alignment === "left") return `:${"-".repeat(Math.max(1, width - 1))}`;
+      return "-".repeat(width);
+    });
+    const render = (cells) => `| ${header.map((_, index) => {
+      const value = escapeCell(cells[index] ?? "");
+      if (!pad2) return value;
+      return value + " ".repeat(Math.max(0, widths[index] - displayWidth(value)));
+    }).join(" | ")} |`;
+    return [render(header), `| ${rule.join(" | ")} |`, ...body.map(render)].join("\n");
+  }
+  function cellRanges(line) {
+    const ranges = [];
+    let start = null;
+    for (let index = 0; index < line.length; index += 1) {
+      const character = line[index];
+      if (character === "\\") {
+        index += 1;
+        continue;
+      }
+      if (character === "|") {
+        if (start !== null) ranges.push([start, index]);
+        start = index + 1;
+        continue;
+      }
+    }
+    return ranges.map(([from, to]) => {
+      let left = from;
+      let right = to;
+      while (left < right && line[left] === " ") left += 1;
+      while (right > left && line[right - 1] === " ") right -= 1;
+      return [left, right];
+    });
+  }
+  function isTableSeparator(line) {
+    return /^\s*\|?[\s:|-]+\|?\s*$/.test(line) && line.includes("-");
+  }
+
   // src/livePreview.js
   var liveHighlight = HighlightStyle.define([
     { tag: tags.heading1, fontSize: "1.5em", fontWeight: "700", lineHeight: "1.35" },
@@ -43610,16 +43702,21 @@ ${text2}</tr>
     return text2.replace(/`([^`]+)`/g, "$1").replace(/\*\*([^*]+)\*\*/g, "$1").replace(/(^|[^*])\*([^*\n]+)\*/g, "$1$2").replace(/\[([^\]]+)\]\([^)]*\)/g, "$1").replace(/~~([^~]+)~~/g, "$1").trim();
   }
   function parseTable(source) {
-    const lines = source.split("\n").filter((line) => line.trim().length);
-    const cellsOf = (line) => line.replace(/^\s*\|/, "").replace(/\|\s*$/, "").split(/(?<!\\)\|/).map((cell) => plainInline(cell));
-    const header = lines.length ? cellsOf(lines[0]) : [];
-    const body = lines.slice(2).map(cellsOf);
-    return { header, body };
+    const parsed = parseTableSource(source);
+    const clean = (cells) => cells.map(plainInline);
+    return {
+      header: clean(parsed.header),
+      body: parsed.body.map(clean),
+      align: parsed.align,
+      columns: parsed.header.length
+    };
   }
   var TableWidget = class extends WidgetType {
-    constructor(rows) {
+    constructor(rows, meta2, onEdit) {
       super();
       this.rows = rows;
+      this.meta = meta2;
+      this.onEdit = onEdit;
       this.key = JSON.stringify(rows);
     }
     eq(other2) {
@@ -43628,12 +43725,27 @@ ${text2}</tr>
     toDOM() {
       const box = document.createElement("div");
       box.className = "cm-lp-table";
+      if (this.onEdit) {
+        const edit2 = document.createElement("button");
+        edit2.type = "button";
+        edit2.className = "cm-lp-table-edit";
+        edit2.textContent = "\u7F16\u8F91\u8868\u683C";
+        edit2.title = "\u5728\u7F51\u683C\u91CC\u7F16\u8F91\u8FD9\u4E00\u5F20\u8868\uFF08Tab \u8DF3\u683C\uFF09";
+        edit2.addEventListener("mousedown", (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          this.onEdit(this.meta, this.rows);
+        });
+        box.appendChild(edit2);
+      }
       const table = document.createElement("table");
       const head = document.createElement("thead");
       const headRow = document.createElement("tr");
       for (const cell of this.rows.header) {
         const th = document.createElement("th");
         th.textContent = cell;
+        const alignment = this.rows.align?.[headRow.childNodes.length];
+        if (alignment && alignment !== "left") th.style.textAlign = alignment;
         headRow.appendChild(th);
       }
       head.appendChild(headRow);
@@ -43643,6 +43755,8 @@ ${text2}</tr>
         for (let index = 0; index < this.rows.header.length; index += 1) {
           const td = document.createElement("td");
           td.textContent = row[index] ?? "";
+          const alignment = this.rows.align?.[index];
+          if (alignment && alignment !== "left") td.style.textAlign = alignment;
           tr.appendChild(td);
         }
         body.appendChild(tr);
@@ -43652,9 +43766,93 @@ ${text2}</tr>
       return box;
     }
     ignoreEvent() {
-      return false;
+      return true;
     }
   };
+  var editTableHandler = Facet.define({ combine: (values2) => values2[0] ?? null });
+  function moveCell(view, direction) {
+    const { state } = view;
+    const head = state.selection.main.head;
+    const table = tableAt(state, head);
+    if (!table) return false;
+    const lines = [];
+    for (let number2 = table.startLine; number2 <= table.endLine; number2 += 1) {
+      lines.push(state.doc.line(number2));
+    }
+    const separatorIndex = lines.findIndex((line, index) => index > 0 && isTableSeparator(line.text));
+    const isSeparator = (index) => index === separatorIndex;
+    const currentLine = state.doc.lineAt(head);
+    let rowIndex = lines.findIndex((line) => line.number === currentLine.number);
+    if (rowIndex < 0) return true;
+    const cells = cellRanges(currentLine.text).map(([from, to]) => [from + currentLine.from, to + currentLine.from]);
+    let columnIndex = cells.findIndex(([from, to]) => head >= from && head <= to);
+    if (columnIndex < 0) columnIndex = Math.max(0, cells.length - 1);
+    let targetRow = rowIndex;
+    let targetColumn = columnIndex + direction;
+    let insertRowAfter = null;
+    if (targetColumn >= cells.length) {
+      targetColumn = 0;
+      do {
+        targetRow += 1;
+      } while (targetRow <= lines.length - 1 && isSeparator(targetRow));
+      if (targetRow > lines.length - 1) {
+        insertRowAfter = lines.length - 1;
+        targetRow = lines.length;
+      }
+    } else if (targetColumn < 0) {
+      targetColumn = -1;
+      do {
+        targetRow -= 1;
+      } while (targetRow >= 0 && isSeparator(targetRow));
+      if (targetRow < 0) return true;
+      targetColumn = cellRanges(lines[targetRow].text).length - 1;
+    }
+    const columns = parseTableSource(lines.map((line) => line.text).join("\n")).header.length;
+    const tableRows = lines.filter((_, index) => !isSeparator(index)).map((line) => cellRanges(line.text).map(([from, to]) => line.text.slice(from, to)));
+    const headerCells = tableRows[0] ?? [];
+    const dataCells = tableRows.slice(1);
+    const align = splitRowAlign(lines);
+    if (insertRowAfter !== null) dataCells.push(new Array(Math.max(1, columns)).fill(""));
+    const rebuilt = serializeTable(
+      { header: headerCells.length ? headerCells : new Array(Math.max(1, columns)).fill(""), body: dataCells, align },
+      { pad: true }
+    );
+    const first = lines[0];
+    const last2 = lines[lines.length - 1];
+    const rebuiltLines = rebuilt.split("\n");
+    let targetLine;
+    if (separatorIndex === -1) targetLine = targetRow === 0 ? 0 : targetRow + 1;
+    else if (targetRow < separatorIndex) targetLine = 0;
+    else targetLine = 2 + (targetRow - separatorIndex - 1);
+    targetLine = Math.max(0, Math.min(rebuiltLines.length - 1, targetLine));
+    const targetCells = cellRanges(rebuiltLines[targetLine] ?? "");
+    const cell = targetCells[Math.min(Math.max(targetColumn, 0), targetCells.length - 1)] ?? null;
+    let anchor = first.from;
+    for (let index = 0; index < targetLine; index += 1) anchor += rebuiltLines[index].length + 1;
+    const position = cell ? anchor + cell[1] : anchor;
+    view.dispatch({ changes: { from: first.from, to: last2.to, insert: rebuilt }, selection: { anchor: position } });
+    return true;
+  }
+  function splitRowAlign(lines) {
+    const parsed = parseTableSource(lines.map((line) => line.text).join("\n"));
+    return parsed.align;
+  }
+  function tableAt(state, pos) {
+    let found = null;
+    syntaxTree(state).iterate({
+      enter: (node) => {
+        if (node.name !== "Table" || node.from > pos || pos > node.to) return;
+        found = {
+          from: node.from,
+          to: node.to,
+          startLine: state.doc.lineAt(node.from).number,
+          endLine: state.doc.lineAt(Math.min(node.to, state.doc.length)).number
+        };
+        return false;
+      }
+    });
+    return found;
+  }
   var HIDE_MARKERS = /* @__PURE__ */ new Set([
     "HeaderMark",
     "EmphasisMark",
@@ -43713,10 +43911,19 @@ ${text2}</tr>
           return false;
         }
         if (name2 === "Table") {
-          if (!touched(node.from, node.to)) {
-            const source = state.doc.sliceString(node.from, node.to);
-            pushRange(node.from, node.to, Decoration.replace({ widget: new TableWidget(parseTable(source)), block: true }));
-          }
+          const source = state.doc.sliceString(node.from, node.to);
+          pushRange(
+            node.from,
+            node.to,
+            Decoration.replace({
+              widget: new TableWidget(
+                parseTable(source),
+                { from: node.from, to: node.to, source },
+                state.facet(editTableHandler)
+              ),
+              block: true
+            })
+          );
           return false;
         }
         if (name2 === "HorizontalRule") {
@@ -43796,6 +44003,20 @@ ${text2}</tr>
     },
     provide: (field) => EditorView.decorations.from(field)
   });
+  var tableRangesField = StateField.define({
+    create: (state) => tableRanges(state),
+    update: (ranges, transaction) => transaction.docChanged ? tableRanges(transaction.state) : ranges,
+    provide: (field) => EditorView.atomicRanges.of((view) => view.state.field(field))
+  });
+  function tableRanges(state) {
+    const builder = new RangeSetBuilder();
+    syntaxTree(state).iterate({
+      enter: (node) => {
+        if (node.name === "Table") builder.add(node.from, node.to, Decoration.replace({}));
+      }
+    });
+    return builder.finish();
+  }
   var livePreviewTheme = EditorView.theme({
     "&": { height: "100%", backgroundColor: "transparent" },
     // Prose in the body font: this is a document view, not a code view.
@@ -43828,7 +44049,7 @@ ${text2}</tr>
     ".cm-lp-task.done": { color: "var(--fb-positive)" },
     ".cm-lp-image img": { maxWidth: "100%", borderRadius: "4px", display: "block" }
   });
-  function createMarkdownEditor({ parent, doc: doc2, onDocChanged }) {
+  function createMarkdownEditor({ parent, doc: doc2, onDocChanged, onEditTable }) {
     const liveCompartment = new Compartment();
     const gutterCompartment = new Compartment();
     const wrapCompartment = new Compartment();
@@ -43839,10 +44060,19 @@ ${text2}</tr>
         history(),
         drawSelection(),
         highlightActiveLine(),
+        // High precedence so Tab inside a raw table moves between cells before
+        // indentWithTab turns it into an indentation character.
+        Prec.high(
+          keymap.of([
+            { key: "Tab", run: (view2) => moveCell(view2, 1) },
+            { key: "Shift-Tab", run: (view2) => moveCell(view2, -1) }
+          ])
+        ),
         keymap.of([...defaultKeymap, ...historyKeymap, indentWithTab]),
         markdown({ base: markdownLanguage }),
         syntaxHighlighting(liveHighlight),
-        liveCompartment.of(livePreviewField),
+        liveCompartment.of([livePreviewField, tableRangesField]),
+        editTableHandler.of(onEditTable ?? null),
         livePreviewTheme,
         wrapCompartment.of([]),
         placeholder("\u5F00\u59CB\u5199 Markdown\u2026"),
@@ -43860,7 +44090,7 @@ ${text2}</tr>
         view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: text2 } });
       },
       setLive(enabled) {
-        view.dispatch({ effects: liveCompartment.reconfigure(enabled ? livePreviewField : []) });
+        view.dispatch({ effects: liveCompartment.reconfigure(enabled ? [livePreviewField, tableRangesField] : []) });
       },
       setLineNumbers(enabled) {
         view.dispatch({ effects: gutterCompartment.reconfigure(enabled ? lineNumbers() : []) });
@@ -44196,6 +44426,7 @@ ${text2}</tr>
     historyRel: "",
     media: { scale: 1, offsetX: 0, offsetY: 0, fitPending: true, allowUpscale: false },
     live: { handle: null, rel: null },
+    tableEdit: null,
     cursorRel: null,
     cursorScroll: false
   };
@@ -44251,7 +44482,17 @@ ${text2}</tr>
     mediaActual: el("media-actual"),
     liveWrap: el("live-wrap"),
     liveHost: el("live-editor"),
-    modeMenu: el("mode-menu")
+    modeMenu: el("mode-menu"),
+    tableEditor: el("table-editor"),
+    tableGrid: el("table-grid"),
+    tableNote: el("table-note"),
+    tableClose: el("table-close"),
+    tableCancel: el("table-cancel"),
+    tableSave: el("table-save"),
+    tableAddRow: el("table-add-row"),
+    tableAddCol: el("table-add-col"),
+    tableDelRow: el("table-del-row"),
+    tableDelCol: el("table-del-col")
   };
   function send(message) {
     bridge.postMessage(message);
@@ -44285,9 +44526,9 @@ ${text2}</tr>
     if (!ms) return "";
     const date = new Date(ms);
     const now = /* @__PURE__ */ new Date();
-    const pad = (value) => String(value).padStart(2, "0");
-    if (date.toDateString() === now.toDateString()) return `${pad(date.getHours())}:${pad(date.getMinutes())}`;
-    if (date.getFullYear() === now.getFullYear()) return `${MONTHS[date.getMonth()]}-${pad(date.getDate())}`;
+    const pad2 = (value) => String(value).padStart(2, "0");
+    if (date.toDateString() === now.toDateString()) return `${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
+    if (date.getFullYear() === now.getFullYear()) return `${MONTHS[date.getMonth()]}-${pad2(date.getDate())}`;
     return `${date.getFullYear()}-${MONTHS[date.getMonth()]}`;
   }
   var ICON_FOLDER = '<svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h3.6a2 2 0 0 1 1.4.6L11.4 7H19a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></svg>';
@@ -44339,9 +44580,9 @@ ${text2}</tr>
       chev.textContent = "\u25B6";
       row.appendChild(chev);
     } else {
-      const pad = document.createElement("span");
-      pad.className = "chev";
-      row.appendChild(pad);
+      const pad2 = document.createElement("span");
+      pad2.className = "chev";
+      row.appendChild(pad2);
     }
     const ico = document.createElement("span");
     ico.className = "ico";
@@ -44663,6 +44904,7 @@ ${text2}</tr>
     return editorText().split("\n").length;
   }
   function teardownLiveEditor() {
+    if (!ui.tableEditor.hidden) closeTableEditor();
     if (S2.live.handle) {
       S2.live.handle.destroy();
       S2.live.handle = null;
@@ -44682,7 +44924,8 @@ ${text2}</tr>
         if (!S2.autoSavePaused) setSaveStatus("dirty");
         scheduleAutoSave();
         renderCrumb();
-      }
+      },
+      onEditTable: (meta2, rows) => openTableEditor(meta2, rows)
     });
     S2.live.rel = file.rel;
     applyLiveSettings();
@@ -44696,6 +44939,172 @@ ${text2}</tr>
     const size = S2.settings.codeFontSize;
     ui.liveHost.style.setProperty("--lp-code-size", size > 0 ? `${size}px` : "");
   }
+  function openTableEditor(meta2) {
+    const handle2 = S2.live.handle;
+    if (!handle2 || !ui.tableEditor.hidden) return;
+    const parsed = parseTableSource(meta2.source);
+    const columns = Math.max(1, parsed.header.length);
+    S2.tableEdit = {
+      meta: meta2,
+      align: parsed.align,
+      columns,
+      header: pad(parsed.header, columns),
+      body: parsed.body.map((row) => pad(row, columns))
+    };
+    if (!S2.tableEdit.header.some((cell) => cell.length)) S2.tableEdit.header = new Array(columns).fill("");
+    if (!S2.tableEdit.body.length) S2.tableEdit.body.push(new Array(columns).fill(""));
+    renderTableGrid();
+    ui.tableEditor.hidden = false;
+    const first = ui.tableGrid.querySelector("input");
+    if (first) {
+      first.focus();
+      first.select();
+    }
+  }
+  function pad(row, columns) {
+    const next = row.slice(0, columns);
+    while (next.length < columns) next.push("");
+    return next;
+  }
+  function renderTableGrid() {
+    const state = S2.tableEdit;
+    if (!state) return;
+    const grid = document.createElement("table");
+    const body = document.createElement("tbody");
+    const addRow = (label, cells, isHeader) => {
+      const tr = document.createElement("tr");
+      if (isHeader) tr.className = "table-editor-head-row";
+      const th = document.createElement("th");
+      th.scope = "row";
+      th.textContent = label;
+      tr.appendChild(th);
+      cells.forEach((cell, index) => {
+        const td = document.createElement("td");
+        const input = document.createElement("input");
+        input.type = "text";
+        input.value = cell;
+        input.dataset.role = isHeader ? "header" : "body";
+        input.dataset.index = String(index);
+        input.name = `${isHeader ? "header" : "body"}-${index}`;
+        input.spellcheck = false;
+        input.title = `${isHeader ? "\u8868\u5934" : "\u5355\u5143\u683C"} \xB7 \u7B2C ${index + 1} \u5217`;
+        input.addEventListener("keydown", onGridKeydown);
+        td.appendChild(input);
+        tr.appendChild(td);
+      });
+      body.appendChild(tr);
+    };
+    addRow("\u8868\u5934", state.header, true);
+    state.body.forEach((row, index) => addRow(`\u7B2C ${index + 1} \u884C`, row, false));
+    grid.appendChild(body);
+    ui.tableGrid.replaceChildren(grid);
+    ui.tableNote.textContent = `${state.columns} \u5217 \xB7 ${state.body.length} \u884C`;
+  }
+  function readTableGrid() {
+    const state = S2.tableEdit;
+    if (!state) return null;
+    const cells = (role) => [...ui.tableGrid.querySelectorAll(`input[data-role="${role}"]`)].map((input) => input.value);
+    const columns = state.columns;
+    const header = pad(cells("header"), columns);
+    const flat = cells("body");
+    const body = [];
+    for (let index = 0; index < flat.length; index += columns) body.push(flat.slice(index, index + columns));
+    return { header, body, align: state.align };
+  }
+  function onGridKeydown(event) {
+    const input = event.target;
+    if (!(input instanceof HTMLInputElement)) return;
+    const inputs = [...ui.tableGrid.querySelectorAll("input")];
+    const position = inputs.indexOf(input);
+    if (event.key === "Enter") {
+      event.preventDefault();
+      const next = inputs[position + S2.tableEdit.columns];
+      if (next) {
+        next.focus();
+        next.select();
+      } else {
+        addGridRow();
+        const after = [...ui.tableGrid.querySelectorAll("input")];
+        const created = after[position + S2.tableEdit.columns];
+        if (created) {
+          created.focus();
+          created.select();
+        }
+      }
+      return;
+    }
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      closeTableEditor();
+    }
+  }
+  function addGridRow() {
+    const state = S2.tableEdit;
+    if (!state) return;
+    state.body = [...state.body, new Array(state.columns).fill("")];
+    renderTableGrid();
+  }
+  function addGridColumn() {
+    const state = S2.tableEdit;
+    if (!state) return;
+    const values2 = readTableGrid();
+    state.columns += 1;
+    state.align = [...state.align, null];
+    state.header = pad(values2.header, state.columns);
+    state.body = values2.body.map((row) => pad(row, state.columns));
+    renderTableGrid();
+  }
+  function removeGridRow() {
+    const state = S2.tableEdit;
+    if (!state || state.body.length <= 1) return;
+    const values2 = readTableGrid();
+    state.body = values2.body.slice(0, -1);
+    state.header = values2.header;
+    renderTableGrid();
+  }
+  function removeGridColumn() {
+    const state = S2.tableEdit;
+    if (!state || state.columns <= 1) return;
+    const values2 = readTableGrid();
+    state.columns -= 1;
+    state.align = state.align.slice(0, state.columns);
+    state.header = pad(values2.header, state.columns);
+    state.body = values2.body.map((row) => pad(row, state.columns));
+    renderTableGrid();
+  }
+  function saveTableEditor() {
+    const state = S2.tableEdit;
+    const handle2 = S2.live.handle;
+    if (!state || !handle2) return;
+    const view = handle2.view;
+    const { meta: meta2 } = state;
+    if (view.state.doc.sliceString(meta2.from, meta2.to) !== meta2.source) {
+      closeTableEditor();
+      toast("\u8FD9\u4E00\u5F20\u8868\u5DF2\u7ECF\u6539\u8FC7\u4E86\uFF0C\u8BF7\u91CD\u65B0\u70B9\u51FB\u300C\u7F16\u8F91\u8868\u683C\u300D");
+      return;
+    }
+    const markdown2 = serializeTable(readTableGrid(), { pad: true });
+    closeTableEditor();
+    view.dispatch({ changes: { from: meta2.from, to: meta2.to, insert: markdown2 } });
+    view.focus();
+    toast("\u8868\u683C\u5DF2\u66F4\u65B0");
+  }
+  function closeTableEditor() {
+    ui.tableEditor.hidden = true;
+    ui.tableGrid.replaceChildren();
+    S2.tableEdit = null;
+  }
+  ui.tableAddRow.addEventListener("click", addGridRow);
+  ui.tableAddCol.addEventListener("click", addGridColumn);
+  ui.tableDelRow.addEventListener("click", removeGridRow);
+  ui.tableDelCol.addEventListener("click", removeGridColumn);
+  ui.tableSave.addEventListener("click", saveTableEditor);
+  ui.tableCancel.addEventListener("click", closeTableEditor);
+  ui.tableClose.addEventListener("click", closeTableEditor);
+  ui.tableEditor.addEventListener("mousedown", (event) => {
+    if (event.target === ui.tableEditor) closeTableEditor();
+  });
   function updateModeButton() {
     const file = S2.current;
     const isText = Boolean(file && file.kind === "text");
@@ -44871,6 +45280,10 @@ ${text2}</tr>
       send({ type: "refresh", rel: "" });
     }
     if (event.key === "Escape") {
+      if (!ui.tableEditor.hidden) {
+        closeTableEditor();
+        return;
+      }
       if (!ui.ctxmenu.hidden) {
         hideCtxMenu();
         return;

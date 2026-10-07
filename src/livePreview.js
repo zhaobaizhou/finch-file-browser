@@ -10,7 +10,7 @@
  * contenteditable/prosemirror round-trip which normalises the Markdown.
  */
 
-import { Compartment, EditorState, RangeSetBuilder, StateField } from '@codemirror/state';
+import { Compartment, EditorState, Facet, Prec, RangeSetBuilder, StateField } from '@codemirror/state';
 import {
   Decoration,
   EditorView,
@@ -24,6 +24,7 @@ import {
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands';
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
 import { HighlightStyle, syntaxHighlighting, syntaxTree } from '@codemirror/language';
+import { cellRanges, isTableSeparator, parseTableSource, serializeTable } from './markdownTable.js';
 import { tags } from '@lezer/highlight';
 
 /* ── text styling inside the editor ──────────────────────────────────────── */
@@ -130,17 +131,16 @@ function plainInline(text) {
     .trim();
 }
 
+/** Display-only view of a table: markers stripped, alignment kept for the render. */
 function parseTable(source) {
-  const lines = source.split('\n').filter((line) => line.trim().length);
-  const cellsOf = (line) =>
-    line
-      .replace(/^\s*\|/, '')
-      .replace(/\|\s*$/, '')
-      .split(/(?<!\\)\|/)
-      .map((cell) => plainInline(cell));
-  const header = lines.length ? cellsOf(lines[0]) : [];
-  const body = lines.slice(2).map(cellsOf); // row 2 is the |---|---| delimiter
-  return { header, body };
+  const parsed = parseTableSource(source);
+  const clean = (cells) => cells.map(plainInline);
+  return {
+    header: clean(parsed.header),
+    body: parsed.body.map(clean),
+    align: parsed.align,
+    columns: parsed.header.length,
+  };
 }
 
 /**
@@ -148,11 +148,18 @@ function parseTable(source) {
  * widget — a multi-line replacement is only allowed as a block — which is why
  * the decorations below are produced by a StateField rather than a ViewPlugin:
  * CodeMirror refuses block decorations from view plugins.
+ *
+ * A table is never shown as source under the caret: editing happens in the grid
+ * editor this widget opens, so the rendered table stays put and the caret cannot
+ * land inside it. `ignoreEvent` says so, and keeps CodeMirror from trying to
+ * place a selection in text that is not on screen.
  */
 class TableWidget extends WidgetType {
-  constructor(rows) {
+  constructor(rows, meta, onEdit) {
     super();
     this.rows = rows;
+    this.meta = meta;
+    this.onEdit = onEdit;
     this.key = JSON.stringify(rows);
   }
   eq(other) {
@@ -161,12 +168,27 @@ class TableWidget extends WidgetType {
   toDOM() {
     const box = document.createElement('div');
     box.className = 'cm-lp-table';
+    if (this.onEdit) {
+      const edit = document.createElement('button');
+      edit.type = 'button';
+      edit.className = 'cm-lp-table-edit';
+      edit.textContent = '编辑表格';
+      edit.title = '在网格里编辑这一张表（Tab 跳格）';
+      edit.addEventListener('mousedown', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        this.onEdit(this.meta, this.rows);
+      });
+      box.appendChild(edit);
+    }
     const table = document.createElement('table');
     const head = document.createElement('thead');
     const headRow = document.createElement('tr');
     for (const cell of this.rows.header) {
       const th = document.createElement('th');
       th.textContent = cell;
+      const alignment = this.rows.align?.[headRow.childNodes.length];
+      if (alignment && alignment !== 'left') th.style.textAlign = alignment;
       headRow.appendChild(th);
     }
     head.appendChild(headRow);
@@ -176,6 +198,8 @@ class TableWidget extends WidgetType {
       for (let index = 0; index < this.rows.header.length; index += 1) {
         const td = document.createElement('td');
         td.textContent = row[index] ?? '';
+        const alignment = this.rows.align?.[index];
+        if (alignment && alignment !== 'left') td.style.textAlign = alignment;
         tr.appendChild(td);
       }
       body.appendChild(tr);
@@ -185,8 +209,130 @@ class TableWidget extends WidgetType {
     return box;
   }
   ignoreEvent() {
-    return false;
+    return true;
   }
+}
+
+/**
+ * The grid editor lives in the panel, not in this module. A state field cannot
+ * close over a callback, so the panel hands its handler in through a facet.
+ */
+const editTableHandler = Facet.define({ combine: (values) => values[0] ?? null });
+
+/* ── source-mode cell navigation ─────────────────────────────────────────── */
+
+/**
+ * Tab / Shift+Tab inside a raw table moves between cells instead of inserting a
+ * tab character, and re-pads the columns so the source stays readable. This is
+ * the part of Obsidian's *Advanced Tables* plugin that is worth copying: it makes
+ * editing the real source feel like a grid, and it never rewrites anything except
+ * whitespace.
+ */
+function moveCell(view, direction) {
+  const { state } = view;
+  const head = state.selection.main.head;
+  const table = tableAt(state, head);
+  if (!table) return false;
+
+  const lines = [];
+  for (let number = table.startLine; number <= table.endLine; number += 1) {
+    lines.push(state.doc.line(number));
+  }
+  const separatorIndex = lines.findIndex((line, index) => index > 0 && isTableSeparator(line.text));
+  const isSeparator = (index) => index === separatorIndex;
+
+  // Which row and cell the caret sits in right now. cellRanges works in offsets
+  // relative to the line, so shift them into document coordinates before comparing.
+  const currentLine = state.doc.lineAt(head);
+  let rowIndex = lines.findIndex((line) => line.number === currentLine.number);
+  if (rowIndex < 0) return true;
+  const cells = cellRanges(currentLine.text).map(([from, to]) => [from + currentLine.from, to + currentLine.from]);
+  let columnIndex = cells.findIndex(([from, to]) => head >= from && head <= to);
+  if (columnIndex < 0) columnIndex = Math.max(0, cells.length - 1);
+
+  // Walk to the target row/cell, skipping the delimiter row.
+  let targetRow = rowIndex;
+  let targetColumn = columnIndex + direction;
+  let insertRowAfter = null;
+  if (targetColumn >= cells.length) {
+    targetColumn = 0;
+    do {
+      targetRow += 1;
+    } while (targetRow <= lines.length - 1 && isSeparator(targetRow));
+    if (targetRow > lines.length - 1) {
+      // Tabbing off the last row adds one, the way Advanced Tables does.
+      insertRowAfter = lines.length - 1;
+      targetRow = lines.length;
+    }
+  } else if (targetColumn < 0) {
+    targetColumn = -1;
+    do {
+      targetRow -= 1;
+    } while (targetRow >= 0 && isSeparator(targetRow));
+    // Shift+Tab in the first cell: stay put rather than indenting a table row.
+    if (targetRow < 0) return true;
+    targetColumn = cellRanges(lines[targetRow].text).length - 1;
+  }
+
+  const columns = parseTableSource(lines.map((line) => line.text).join('\n')).header.length;
+  const tableRows = lines
+    .filter((_, index) => !isSeparator(index))
+    .map((line) => cellRanges(line.text).map(([from, to]) => line.text.slice(from, to)));
+
+  // Rebuild the table from its own cells so the padding is uniform, then place the
+  // caret in the target cell of the *new* text (offsets change, indices do not).
+  const headerCells = tableRows[0] ?? [];
+  const dataCells = tableRows.slice(1);
+  const align = splitRowAlign(lines);
+  if (insertRowAfter !== null) dataCells.push(new Array(Math.max(1, columns)).fill(''));
+  const rebuilt = serializeTable(
+    { header: headerCells.length ? headerCells : new Array(Math.max(1, columns)).fill(''), body: dataCells, align },
+    { pad: true },
+  );
+
+  const first = lines[0];
+  const last = lines[lines.length - 1];
+  const rebuiltLines = rebuilt.split('\n');
+
+  // Map the original row index onto the rebuilt text: header, rule, then data rows.
+  let targetLine;
+  if (separatorIndex === -1) targetLine = targetRow === 0 ? 0 : targetRow + 1;
+  else if (targetRow < separatorIndex) targetLine = 0;
+  else targetLine = 2 + (targetRow - separatorIndex - 1);
+  targetLine = Math.max(0, Math.min(rebuiltLines.length - 1, targetLine));
+
+  const targetCells = cellRanges(rebuiltLines[targetLine] ?? '');
+  const cell = targetCells[Math.min(Math.max(targetColumn, 0), targetCells.length - 1)] ?? null;
+  let anchor = first.from;
+  for (let index = 0; index < targetLine; index += 1) anchor += rebuiltLines[index].length + 1;
+  const position = cell ? anchor + cell[1] : anchor;
+
+  view.dispatch({ changes: { from: first.from, to: last.to, insert: rebuilt }, selection: { anchor: position } });
+  return true;
+}
+
+/** Alignment markers of a raw table, read off its delimiter row. */
+function splitRowAlign(lines) {
+  const parsed = parseTableSource(lines.map((line) => line.text).join('\n'));
+  return parsed.align;
+}
+
+/** The Table node containing `pos`, if any. */
+function tableAt(state, pos) {
+  let found = null;
+  syntaxTree(state).iterate({
+    enter: (node) => {
+      if (node.name !== 'Table' || node.from > pos || pos > node.to) return;
+      found = {
+        from: node.from,
+        to: node.to,
+        startLine: state.doc.lineAt(node.from).number,
+        endLine: state.doc.lineAt(Math.min(node.to, state.doc.length)).number,
+      };
+      return false;
+    },
+  });
+  return found;
 }
 
 /* ── decoration pass ─────────────────────────────────────────────────────── */
@@ -280,12 +426,23 @@ function buildDecorations(state) {
         return false;
       }
 
-      // Tables: a real table while the caret is elsewhere, raw source while inside.
+      // Tables: always rendered. Editing happens in the grid editor the widget
+      // opens, so the caret never needs to enter the source — which means this is
+      // the one element that does not fall back to raw text under the caret.
       if (name === 'Table') {
-        if (!touched(node.from, node.to)) {
-          const source = state.doc.sliceString(node.from, node.to);
-          pushRange(node.from, node.to, Decoration.replace({ widget: new TableWidget(parseTable(source)), block: true }));
-        }
+        const source = state.doc.sliceString(node.from, node.to);
+        pushRange(
+          node.from,
+          node.to,
+          Decoration.replace({
+            widget: new TableWidget(
+              parseTable(source),
+              { from: node.from, to: node.to, source },
+              state.facet(editTableHandler),
+            ),
+            block: true,
+          }),
+        );
         // Never descend: a table is either rendered or raw, nothing in between.
         return false;
       }
@@ -383,6 +540,28 @@ const livePreviewField = StateField.define({
   provide: (field) => EditorView.decorations.from(field),
 });
 
+/**
+ * Tables are rendered whole and never reveal their source, so without this the
+ * arrow keys would walk the caret *through* text that is not on screen and let
+ * you type into it blind. Marking the ranges atomic makes the caret step over a
+ * table as one unit.
+ */
+const tableRangesField = StateField.define({
+  create: (state) => tableRanges(state),
+  update: (ranges, transaction) => (transaction.docChanged ? tableRanges(transaction.state) : ranges),
+  provide: (field) => EditorView.atomicRanges.of((view) => view.state.field(field)),
+});
+
+function tableRanges(state) {
+  const builder = new RangeSetBuilder();
+  syntaxTree(state).iterate({
+    enter: (node) => {
+      if (node.name === 'Table') builder.add(node.from, node.to, Decoration.replace({}));
+    },
+  });
+  return builder.finish();
+}
+
 /* ── public surface ──────────────────────────────────────────────────────── */
 
 export const livePreviewTheme = EditorView.theme({
@@ -418,7 +597,7 @@ export const livePreviewTheme = EditorView.theme({
   '.cm-lp-image img': { maxWidth: '100%', borderRadius: '4px', display: 'block' },
 });
 
-export function createMarkdownEditor({ parent, doc, onDocChanged }) {
+export function createMarkdownEditor({ parent, doc, onDocChanged, onEditTable }) {
   // Compartments let the mode, the gutter and wrapping change without rebuilding
   // the editor — so undo history survives switching between Live Preview and Source.
   const liveCompartment = new Compartment();
@@ -432,10 +611,19 @@ export function createMarkdownEditor({ parent, doc, onDocChanged }) {
       history(),
       drawSelection(),
       highlightActiveLine(),
+      // High precedence so Tab inside a raw table moves between cells before
+      // indentWithTab turns it into an indentation character.
+      Prec.high(
+        keymap.of([
+          { key: 'Tab', run: (view) => moveCell(view, 1) },
+          { key: 'Shift-Tab', run: (view) => moveCell(view, -1) },
+        ]),
+      ),
       keymap.of([...defaultKeymap, ...historyKeymap, indentWithTab]),
       markdown({ base: markdownLanguage }),
       syntaxHighlighting(liveHighlight),
-      liveCompartment.of(livePreviewField),
+      liveCompartment.of([livePreviewField, tableRangesField]),
+      editTableHandler.of(onEditTable ?? null),
       livePreviewTheme,
       wrapCompartment.of([]),
       placeholder('开始写 Markdown…'),
@@ -454,7 +642,9 @@ export function createMarkdownEditor({ parent, doc, onDocChanged }) {
       view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: text } });
     },
     setLive(enabled) {
-      view.dispatch({ effects: liveCompartment.reconfigure(enabled ? livePreviewField : []) });
+      // The atomic ranges belong to the rendered view: in source mode the table is
+      // real text and the caret has to be able to move through it.
+      view.dispatch({ effects: liveCompartment.reconfigure(enabled ? [livePreviewField, tableRangesField] : []) });
     },
     setLineNumbers(enabled) {
       view.dispatch({ effects: gutterCompartment.reconfigure(enabled ? lineNumbers() : []) });

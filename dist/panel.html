@@ -77,6 +77,30 @@
 
       <div class="ctxmenu mode-menu" id="mode-menu" hidden></div>
       <div class="ctxmenu" id="ctxmenu" hidden></div>
+
+      <div class="table-editor" id="table-editor" hidden>
+        <div class="table-editor-panel" role="dialog" aria-modal="true" aria-label="编辑表格">
+          <header class="table-editor-head">
+            <span class="table-editor-title">编辑表格</span>
+            <span class="table-editor-hint">Tab / Shift+Tab 跳格 · Enter 下一行 · Esc 取消</span>
+            <button class="link" id="table-close" type="button" title="取消">×</button>
+          </header>
+          <div class="table-editor-scroll">
+            <div class="table-editor-grid" id="table-grid"></div>
+          </div>
+          <footer class="table-editor-foot">
+            <button class="btn" id="table-add-row" type="button" title="在末尾加一行">+ 行</button>
+            <button class="btn" id="table-add-col" type="button" title="在末尾加一列">+ 列</button>
+            <button class="btn" id="table-del-row" type="button" title="删除最后一行">− 行</button>
+            <button class="btn" id="table-del-col" type="button" title="删除最后一列">− 列</button>
+            <span class="grow"></span>
+            <span class="table-editor-note" id="table-note"></span>
+            <button class="btn" id="table-cancel" type="button">取消</button>
+            <button class="btn primary" id="table-save" type="button">保存表格</button>
+          </footer>
+        </div>
+      </div>
+
       <div class="tip" id="toast" hidden></div>
     </div>
     <script src="./panel.js"></script>
