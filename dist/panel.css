@@ -178,11 +178,15 @@ html, body {
 
 /* ── Live Preview (CodeMirror) ───────────────────────────────────────────── */
 
-.live-wrap { flex: 1; min-height: 0; display: flex; }
-.live-host { flex: 1; min-height: 0; display: flex; }
-.live-host > .cm-editor { flex: 1; min-height: 0; }
+/* Every level needs `min-width: 0`: a flex item will not shrink below its
+   content's intrinsic width, which let long table rows push the editor past the
+   pane and over the file tree. */
+.live-wrap { flex: 1; min-width: 0; min-height: 0; display: flex; }
+.live-host { flex: 1; min-width: 0; min-height: 0; display: flex; }
+.live-host > .cm-editor { flex: 1; min-width: 0; min-height: 0; }
 .live-host .cm-scroller { overflow: auto; }
 .live-host .cm-editor.cm-focused { outline: none; }
+.live-host .cm-content { max-width: 100%; }
 
 /* Headings get a rule under the top two levels, matching the reading view. */
 .live-host .cm-line.cm-lp-h1 { border-bottom: 1px solid var(--fb-border-subtle); }
@@ -190,6 +194,24 @@ html, body {
 .live-host .cm-line.cm-lp-h2 { padding-bottom: 2px; }
 /* The line the caret is on always shows its raw syntax. */
 .live-host .cm-line.cm-lp-raw { color: var(--fb-text-2); }
+
+/* Rendered tables — same look as the reading view, never wider than the pane. */
+.live-host .cm-lp-table { padding: 4px 0; }
+.live-host .cm-lp-table table {
+  border-collapse: collapse;
+  width: 100%;
+  table-layout: fixed;
+  font-size: 0.95em;
+}
+.live-host .cm-lp-table th,
+.live-host .cm-lp-table td {
+  border: 1px solid var(--fb-border);
+  padding: 4px 8px;
+  text-align: left;
+  vertical-align: top;
+  overflow-wrap: anywhere;
+}
+.live-host .cm-lp-table th { background: var(--fb-bg-elevated); font-weight: 600; }
 
 /* ── image / SVG viewer ──────────────────────────────────────────────────── */
 

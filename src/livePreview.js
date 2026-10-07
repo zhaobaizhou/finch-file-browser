@@ -10,11 +10,10 @@
  * contenteditable/prosemirror round-trip which normalises the Markdown.
  */
 
-import { Compartment, EditorState, RangeSetBuilder } from '@codemirror/state';
+import { Compartment, EditorState, RangeSetBuilder, StateField } from '@codemirror/state';
 import {
   Decoration,
   EditorView,
-  ViewPlugin,
   WidgetType,
   drawSelection,
   highlightActiveLine,
@@ -41,7 +40,7 @@ const liveHighlight = HighlightStyle.define([
   { tag: tags.strikethrough, textDecoration: 'line-through' },
   { tag: tags.link, color: 'var(--fb-accent)' },
   { tag: tags.url, color: 'var(--fb-text-3)' },
-  { tag: tags.monospace, color: 'var(--fb-accent)' },
+  { tag: tags.monospace, fontFamily: 'var(--fb-mono)', fontSize: '0.92em', color: 'var(--fb-accent)' },
   { tag: tags.quote, color: 'var(--fb-text-2)' },
   { tag: tags.list, color: 'var(--fb-text-2)' },
   { tag: tags.contentSeparator, color: 'var(--fb-text-3)' },
@@ -120,6 +119,76 @@ class ImageWidget extends WidgetType {
   }
 }
 
+/** Cell text still carries inline markers; show it the way the reading view would. */
+function plainInline(text) {
+  return text
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/\*\*([^*]+)\*\*/g, '$1')
+    .replace(/(^|[^*])\*([^*\n]+)\*/g, '$1$2')
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+    .replace(/~~([^~]+)~~/g, '$1')
+    .trim();
+}
+
+function parseTable(source) {
+  const lines = source.split('\n').filter((line) => line.trim().length);
+  const cellsOf = (line) =>
+    line
+      .replace(/^\s*\|/, '')
+      .replace(/\|\s*$/, '')
+      .split(/(?<!\\)\|/)
+      .map((cell) => plainInline(cell));
+  const header = lines.length ? cellsOf(lines[0]) : [];
+  const body = lines.slice(2).map(cellsOf); // row 2 is the |---|---| delimiter
+  return { header, body };
+}
+
+/**
+ * A real table for a source block that cannot be shown as one. This is a block
+ * widget — a multi-line replacement is only allowed as a block — which is why
+ * the decorations below are produced by a StateField rather than a ViewPlugin:
+ * CodeMirror refuses block decorations from view plugins.
+ */
+class TableWidget extends WidgetType {
+  constructor(rows) {
+    super();
+    this.rows = rows;
+    this.key = JSON.stringify(rows);
+  }
+  eq(other) {
+    return other.key === this.key;
+  }
+  toDOM() {
+    const box = document.createElement('div');
+    box.className = 'cm-lp-table';
+    const table = document.createElement('table');
+    const head = document.createElement('thead');
+    const headRow = document.createElement('tr');
+    for (const cell of this.rows.header) {
+      const th = document.createElement('th');
+      th.textContent = cell;
+      headRow.appendChild(th);
+    }
+    head.appendChild(headRow);
+    const body = document.createElement('tbody');
+    for (const row of this.rows.body) {
+      const tr = document.createElement('tr');
+      for (let index = 0; index < this.rows.header.length; index += 1) {
+        const td = document.createElement('td');
+        td.textContent = row[index] ?? '';
+        tr.appendChild(td);
+      }
+      body.appendChild(tr);
+    }
+    table.append(head, body);
+    box.appendChild(table);
+    return box;
+  }
+  ignoreEvent() {
+    return false;
+  }
+}
+
 /* ── decoration pass ─────────────────────────────────────────────────────── */
 
 /** Node names whose markers are hidden while the caret is elsewhere. */
@@ -161,10 +230,9 @@ const LINE_CLASS = {
   FencedCode: 'cm-lp-fence',
 };
 
-function buildDecorations(view) {
+function buildDecorations(state) {
   const builder = new RangeSetBuilder();
   const ranges = [];
-  const { state } = view;
   const selection = state.selection.main;
 
   // A caret anywhere inside a node keeps that node's raw syntax visible.
@@ -209,6 +277,16 @@ function buildDecorations(view) {
           if (info) pushRange(info.from, info.to, Decoration.replace({}));
         }
         // Skip children: inline rules inside a fence would mangle code.
+        return false;
+      }
+
+      // Tables: a real table while the caret is elsewhere, raw source while inside.
+      if (name === 'Table') {
+        if (!touched(node.from, node.to)) {
+          const source = state.doc.sliceString(node.from, node.to);
+          pushRange(node.from, node.to, Decoration.replace({ widget: new TableWidget(parseTable(source)), block: true }));
+        }
+        // Never descend: a table is either rendered or raw, nothing in between.
         return false;
       }
 
@@ -291,38 +369,49 @@ function buildDecorations(view) {
   return builder.finish();
 }
 
-const livePreviewPlugin = ViewPlugin.fromClass(
-  class {
-    constructor(view) {
-      this.decorations = buildDecorations(view);
-    }
-    update(update) {
-      if (update.docChanged || update.selectionSet || update.viewportChanged) {
-        this.decorations = buildDecorations(update.view);
-      }
-    }
+/**
+ * A StateField rather than a ViewPlugin, because a multi-line replacement (the
+ * table) must be a block decoration and CodeMirror refuses block decorations
+ * from view plugins.
+ */
+const livePreviewField = StateField.define({
+  create: (state) => buildDecorations(state),
+  update: (decorations, transaction) => {
+    if (transaction.docChanged || transaction.selection) return buildDecorations(transaction.state);
+    return decorations.map(transaction.changes);
   },
-  { decorations: (instance) => instance.decorations },
-);
+  provide: (field) => EditorView.decorations.from(field),
+});
 
 /* ── public surface ──────────────────────────────────────────────────────── */
 
 export const livePreviewTheme = EditorView.theme({
   '&': { height: '100%', backgroundColor: 'transparent' },
-  '.cm-scroller': { fontFamily: 'var(--fb-mono)', lineHeight: 'var(--finch-code-line-height, 1.6)' },
+  // Prose in the body font: this is a document view, not a code view.
+  '.cm-scroller': {
+    fontFamily: 'var(--finch-font-body)',
+    fontSize: 'var(--finch-message-font-size, 13px)',
+    lineHeight: 'var(--finch-message-line-height, 1.65)',
+  },
   '.cm-content': { padding: '16px 20px 60px', caretColor: 'var(--fb-accent)' },
   '.cm-gutters': {
     backgroundColor: 'var(--fb-bg-elevated)',
     color: 'var(--fb-text-3)',
     border: 'none',
     borderRight: '1px solid var(--fb-border-subtle)',
+    fontFamily: 'var(--fb-mono)',
   },
   '.cm-activeLine': { backgroundColor: 'transparent' },
   '.cm-activeLineGutter': { backgroundColor: 'transparent' },
   '&.cm-focused': { outline: 'none' },
   '.cm-lp-bullet': { color: 'var(--fb-accent)', paddingRight: '2px' },
-  '.cm-lp-quote': { borderLeft: '3px solid var(--fb-border)', paddingLeft: '12px' },
-  '.cm-lp-code-line': { backgroundColor: 'var(--fb-bg-elevated)' },
+  '.cm-lp-quote': { borderLeft: '3px solid var(--fb-border)', paddingLeft: '12px', color: 'var(--fb-text-2)' },
+  // Code keeps the monospace face and the code font size.
+  '.cm-lp-code-line': {
+    backgroundColor: 'var(--fb-bg-elevated)',
+    fontFamily: 'var(--fb-mono)',
+    fontSize: 'var(--lp-code-size, var(--finch-code-font-size, 12px))',
+  },
   '.cm-lp-rule': { border: 'none', borderTop: '1px solid var(--fb-border)', margin: '8px 0' },
   '.cm-lp-task': { color: 'var(--fb-text-3)' },
   '.cm-lp-task.done': { color: 'var(--fb-positive)' },
@@ -346,7 +435,7 @@ export function createMarkdownEditor({ parent, doc, onDocChanged }) {
       keymap.of([...defaultKeymap, ...historyKeymap, indentWithTab]),
       markdown({ base: markdownLanguage }),
       syntaxHighlighting(liveHighlight),
-      liveCompartment.of(livePreviewPlugin),
+      liveCompartment.of(livePreviewField),
       livePreviewTheme,
       wrapCompartment.of([]),
       placeholder('开始写 Markdown…'),
@@ -365,7 +454,7 @@ export function createMarkdownEditor({ parent, doc, onDocChanged }) {
       view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: text } });
     },
     setLive(enabled) {
-      view.dispatch({ effects: liveCompartment.reconfigure(enabled ? livePreviewPlugin : []) });
+      view.dispatch({ effects: liveCompartment.reconfigure(enabled ? livePreviewField : []) });
     },
     setLineNumbers(enabled) {
       view.dispatch({ effects: gutterCompartment.reconfigure(enabled ? lineNumbers() : []) });

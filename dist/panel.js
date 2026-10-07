@@ -43534,7 +43534,7 @@ ${text2}</tr>
     { tag: tags.strikethrough, textDecoration: "line-through" },
     { tag: tags.link, color: "var(--fb-accent)" },
     { tag: tags.url, color: "var(--fb-text-3)" },
-    { tag: tags.monospace, color: "var(--fb-accent)" },
+    { tag: tags.monospace, fontFamily: "var(--fb-mono)", fontSize: "0.92em", color: "var(--fb-accent)" },
     { tag: tags.quote, color: "var(--fb-text-2)" },
     { tag: tags.list, color: "var(--fb-text-2)" },
     { tag: tags.contentSeparator, color: "var(--fb-text-3)" }
@@ -43606,6 +43606,55 @@ ${text2}</tr>
       return false;
     }
   };
+  function plainInline(text2) {
+    return text2.replace(/`([^`]+)`/g, "$1").replace(/\*\*([^*]+)\*\*/g, "$1").replace(/(^|[^*])\*([^*\n]+)\*/g, "$1$2").replace(/\[([^\]]+)\]\([^)]*\)/g, "$1").replace(/~~([^~]+)~~/g, "$1").trim();
+  }
+  function parseTable(source) {
+    const lines = source.split("\n").filter((line) => line.trim().length);
+    const cellsOf = (line) => line.replace(/^\s*\|/, "").replace(/\|\s*$/, "").split(/(?<!\\)\|/).map((cell) => plainInline(cell));
+    const header = lines.length ? cellsOf(lines[0]) : [];
+    const body = lines.slice(2).map(cellsOf);
+    return { header, body };
+  }
+  var TableWidget = class extends WidgetType {
+    constructor(rows) {
+      super();
+      this.rows = rows;
+      this.key = JSON.stringify(rows);
+    }
+    eq(other2) {
+      return other2.key === this.key;
+    }
+    toDOM() {
+      const box = document.createElement("div");
+      box.className = "cm-lp-table";
+      const table = document.createElement("table");
+      const head = document.createElement("thead");
+      const headRow = document.createElement("tr");
+      for (const cell of this.rows.header) {
+        const th = document.createElement("th");
+        th.textContent = cell;
+        headRow.appendChild(th);
+      }
+      head.appendChild(headRow);
+      const body = document.createElement("tbody");
+      for (const row of this.rows.body) {
+        const tr = document.createElement("tr");
+        for (let index = 0; index < this.rows.header.length; index += 1) {
+          const td = document.createElement("td");
+          td.textContent = row[index] ?? "";
+          tr.appendChild(td);
+        }
+        body.appendChild(tr);
+      }
+      table.append(head, body);
+      box.appendChild(table);
+      return box;
+    }
+    ignoreEvent() {
+      return false;
+    }
+  };
   var HIDE_MARKERS = /* @__PURE__ */ new Set([
     "HeaderMark",
     "EmphasisMark",
@@ -43624,10 +43673,9 @@ ${text2}</tr>
     Blockquote: "cm-lp-quote",
     FencedCode: "cm-lp-fence"
   };
-  function buildDecorations(view) {
+  function buildDecorations(state) {
     const builder = new RangeSetBuilder();
     const ranges = [];
-    const { state } = view;
     const selection = state.selection.main;
     const touched = (from, to) => selection.from <= to && selection.to >= from;
     const push = (from, to, decoration) => {
@@ -43661,6 +43709,13 @@ ${text2}</tr>
             }
             const info = node.node.getChild("CodeInfo");
             if (info) pushRange(info.from, info.to, Decoration.replace({}));
+          }
+          return false;
+        }
+        if (name2 === "Table") {
+          if (!touched(node.from, node.to)) {
+            const source = state.doc.sliceString(node.from, node.to);
+            pushRange(node.from, node.to, Decoration.replace({ widget: new TableWidget(parseTable(source)), block: true }));
           }
           return false;
         }
@@ -43733,35 +43788,41 @@ ${text2}</tr>
     for (const range of ranges) builder.add(range.from, range.to, range.decoration);
     return builder.finish();
   }
-  var livePreviewPlugin = ViewPlugin.fromClass(
-    class {
-      constructor(view) {
-        this.decorations = buildDecorations(view);
-      }
-      update(update) {
-        if (update.docChanged || update.selectionSet || update.viewportChanged) {
-          this.decorations = buildDecorations(update.view);
-        }
-      }
+  var livePreviewField = StateField.define({
+    create: (state) => buildDecorations(state),
+    update: (decorations2, transaction) => {
+      if (transaction.docChanged || transaction.selection) return buildDecorations(transaction.state);
+      return decorations2.map(transaction.changes);
     },
-    { decorations: (instance) => instance.decorations }
-  );
+    provide: (field) => EditorView.decorations.from(field)
+  });
   var livePreviewTheme = EditorView.theme({
     "&": { height: "100%", backgroundColor: "transparent" },
-    ".cm-scroller": { fontFamily: "var(--fb-mono)", lineHeight: "var(--finch-code-line-height, 1.6)" },
+    // Prose in the body font: this is a document view, not a code view.
+    ".cm-scroller": {
+      fontFamily: "var(--finch-font-body)",
+      fontSize: "var(--finch-message-font-size, 13px)",
+      lineHeight: "var(--finch-message-line-height, 1.65)"
+    },
     ".cm-content": { padding: "16px 20px 60px", caretColor: "var(--fb-accent)" },
     ".cm-gutters": {
       backgroundColor: "var(--fb-bg-elevated)",
       color: "var(--fb-text-3)",
       border: "none",
-      borderRight: "1px solid var(--fb-border-subtle)"
+      borderRight: "1px solid var(--fb-border-subtle)",
+      fontFamily: "var(--fb-mono)"
     },
     ".cm-activeLine": { backgroundColor: "transparent" },
     ".cm-activeLineGutter": { backgroundColor: "transparent" },
     "&.cm-focused": { outline: "none" },
     ".cm-lp-bullet": { color: "var(--fb-accent)", paddingRight: "2px" },
-    ".cm-lp-quote": { borderLeft: "3px solid var(--fb-border)", paddingLeft: "12px" },
-    ".cm-lp-code-line": { backgroundColor: "var(--fb-bg-elevated)" },
+    ".cm-lp-quote": { borderLeft: "3px solid var(--fb-border)", paddingLeft: "12px", color: "var(--fb-text-2)" },
+    // Code keeps the monospace face and the code font size.
+    ".cm-lp-code-line": {
+      backgroundColor: "var(--fb-bg-elevated)",
+      fontFamily: "var(--fb-mono)",
+      fontSize: "var(--lp-code-size, var(--finch-code-font-size, 12px))"
+    },
     ".cm-lp-rule": { border: "none", borderTop: "1px solid var(--fb-border)", margin: "8px 0" },
     ".cm-lp-task": { color: "var(--fb-text-3)" },
     ".cm-lp-task.done": { color: "var(--fb-positive)" },
@@ -43781,7 +43842,7 @@ ${text2}</tr>
         keymap.of([...defaultKeymap, ...historyKeymap, indentWithTab]),
         markdown({ base: markdownLanguage }),
         syntaxHighlighting(liveHighlight),
-        liveCompartment.of(livePreviewPlugin),
+        liveCompartment.of(livePreviewField),
         livePreviewTheme,
         wrapCompartment.of([]),
         placeholder("\u5F00\u59CB\u5199 Markdown\u2026"),
@@ -43799,7 +43860,7 @@ ${text2}</tr>
         view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: text2 } });
       },
       setLive(enabled) {
-        view.dispatch({ effects: liveCompartment.reconfigure(enabled ? livePreviewPlugin : []) });
+        view.dispatch({ effects: liveCompartment.reconfigure(enabled ? livePreviewField : []) });
       },
       setLineNumbers(enabled) {
         view.dispatch({ effects: gutterCompartment.reconfigure(enabled ? lineNumbers() : []) });
@@ -43836,6 +43897,12 @@ ${text2}</tr>
 | \`ThemesConfig_ThemeConfig.json\` | \u4E09\u5957\u4E3B\u9898\uFF1ALight_0\u3001Dark_0\u3001Brown |
 | \`GameConfig.json\` | \u7BAD\u5934\u9000\u51FA\u52A0\u6743\u66F2\u7EBF |
 | \`LevelProgressionConfig-V1.json\` | 40 \u4E2A onboarding \u5173\u5361 ID |
+
+| # | \u4F4D\u7F6E | \u73B0\u5728\u7684 | \u6539\u6210 |
+| --- | --- | --- | --- |
+| 1 | \u5927\u6807\u9898 | \u7238\u5988\u8FD9\u6837\u4E86\uFF0C\u5148\u6D4B\u4E00\u4E0B\u8BE5\u505A\u4EC0\u4E48 | \u5148\u82B1 3 \u5206\u949F\uFF0C\u770B\u770B\u7238\u5988\u7684\u80FD\u529B\u72B6\u51B5 |
+| 2 | \u526F\u6807\u9898 | 23 \u4E2A\u65E5\u5E38\u95EE\u9898 \xB7 3 \u5206\u949F \xB7 \u4E0D\u7528\u53BB\u533B\u9662 \xB7 \u4E0D\u7528\u8001\u4EBA\u914D\u5408 | \u56DE\u7B54 23 \u4E2A\u65E5\u5E38\u95EE\u9898\uFF08\u5403\u996D\u3001\u7A7F\u8863\u3001\u8D70\u52A8\u3001\u8BB0\u6027\uFF09\uFF0C\u4E0D\u7528\u8001\u4EBA\u914D\u5408 |
+| 3 | \u6309\u94AE | \u5F00\u59CB\u6D4B | \u5F00\u59CB\u6D4B\uFF08\u7EA6 3 \u5206\u949F\uFF09 |
 
 \`\`\`json
 { "theme": "Light_0", "hardMode": false, "arrows": 42 }
@@ -44625,9 +44692,9 @@ ${text2}</tr>
     if (!handle2) return;
     handle2.setLive(S2.mode === "live");
     handle2.setLineNumbers(Boolean(S2.settings.showLineNumbers));
-    handle2.setWrap(Boolean(S2.settings.wrapLongLines));
+    handle2.setWrap(S2.mode === "live" || Boolean(S2.settings.wrapLongLines));
     const size = S2.settings.codeFontSize;
-    ui.liveHost.style.fontSize = size > 0 ? `${size}px` : "";
+    ui.liveHost.style.setProperty("--lp-code-size", size > 0 ? `${size}px` : "");
   }
   function updateModeButton() {
     const file = S2.current;

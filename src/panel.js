@@ -28,6 +28,12 @@ function createDemoBridge() {
 | \`GameConfig.json\` | 箭头退出加权曲线 |
 | \`LevelProgressionConfig-V1.json\` | 40 个 onboarding 关卡 ID |
 
+| # | 位置 | 现在的 | 改成 |
+| --- | --- | --- | --- |
+| 1 | 大标题 | 爸妈这样了，先测一下该做什么 | 先花 3 分钟，看看爸妈的能力状况 |
+| 2 | 副标题 | 23 个日常问题 · 3 分钟 · 不用去医院 · 不用老人配合 | 回答 23 个日常问题（吃饭、穿衣、走动、记性），不用老人配合 |
+| 3 | 按钮 | 开始测 | 开始测（约 3 分钟） |
+
 \`\`\`json
 { "theme": "Light_0", "hardMode": false, "arrows": 42 }
 \`\`\`
@@ -936,9 +942,11 @@ function applyLiveSettings() {
   if (!handle) return;
   handle.setLive(S.mode === 'live');
   handle.setLineNumbers(Boolean(S.settings.showLineNumbers));
-  handle.setWrap(Boolean(S.settings.wrapLongLines));
+  // Live Preview is a document view, so it always wraps; only 源码 respects the setting.
+  handle.setWrap(S.mode === 'live' || Boolean(S.settings.wrapLongLines));
   const size = S.settings.codeFontSize;
-  ui.liveHost.style.fontSize = size > 0 ? `${size}px` : '';
+  // The prose keeps Finch's body size; only code changes with this setting.
+  ui.liveHost.style.setProperty('--lp-code-size', size > 0 ? `${size}px` : '');
 }
 
 /* ── mode switching ─────────────────────────────────────────────────────── */
